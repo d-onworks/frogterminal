@@ -1,4 +1,6 @@
 import json
+import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -148,9 +150,10 @@ def test_attach_cmd_turns_on_mouse_for_that_session_only(tmp_path, monkeypatch):
         cmd = sessions.attach_cmd(name, root)
         # mouse on + status/pane-border-status off(창 1개뿐 — 이름표 반복 제거) — 그 세션·창만
         opts = cmd[-19 - len(sessions._COPY_BINDS):-len(sessions._COPY_BINDS)]
-        assert opts == [";", "set-option", "-t", name, "mouse", "on",
-                        ";", "set-option", "-t", name, "status", "off",
-                        ";", "set-option", "-w", "-t", name, "pane-border-status", "off"]
+        t = f"={name}:"
+        assert opts == [";", "set-option", "-t", t, "mouse", "on",
+                        ";", "set-option", "-t", t, "status", "off",
+                        ";", "set-option", "-w", "-t", t, "pane-border-status", "off"]
         assert "-g" not in cmd                           # 전역 '옵션'은 절대 건드리지 않는다
         # 드래그 복사 뒤 복사 모드에 남는 바인딩(키 테이블은 세션 단위가 없어 전역 — 2026-09-15)
         assert cmd[-len(sessions._COPY_BINDS):] == sessions._COPY_BINDS
@@ -198,7 +201,7 @@ def test_kill_session_지목한_이름_하나만_끈다(monkeypatch):
     assert sessions.kill_session("dev") is True
     assert len(calls) == 1
     cmd, kw = calls[0]
-    assert cmd == ["tmux", "kill-session", "-t", "dev"]
+    assert cmd == ["tmux", "kill-session", "-t", "=dev:"]
     assert kw["check"] is True and kw["timeout"] == 5     # 멈춘 tmux 가 브릿지를 붙잡지 않게
 
 
@@ -422,7 +425,22 @@ def test_copy_buffer_는_tmux_버퍼를_상한까지만_준다(monkeypatch):
         returncode = 0
         stdout = "복" * 200_000
     monkeypatch.setattr(sessions.subprocess, "run", lambda *a, **k: R())
-    assert len(sessions.copy_buffer()) == sessions.MAX_COPY_BYTES
+    text, age = sessions.copy_buffer()
+    assert len(text) == sessions.MAX_COPY_BYTES
+    assert age is None                        # 만든 시각이 숫자로 안 오면 나이는 모른다
+
+
+def test_copy_buffer_는_버퍼의_나이를_초로_준다(monkeypatch):
+    """웹이 '누르기 전에 있던 옛 버퍼'를 가려내는 눈금."""
+    now = 1_800_000_000
+    outs = iter([("긁은 글자", 0), (f"{now - 30}\n{now - 999}\n", 0)])
+
+    def run(*a, **k):
+        stdout, code = next(outs)
+        return type("R", (), {"stdout": stdout, "returncode": code})()
+    monkeypatch.setattr(sessions.subprocess, "run", run)
+    monkeypatch.setattr(sessions.time, "time", lambda: now)
+    assert sessions.copy_buffer() == ("긁은 글자", 30)        # 맨 위(최신) 버퍼의 나이
 
 
 def test_copy_buffer_는_버퍼가_없거나_실패해도_빈_문자열(monkeypatch):
@@ -430,19 +448,20 @@ def test_copy_buffer_는_버퍼가_없거나_실패해도_빈_문자열(monkeypa
         returncode = 1
         stdout = ""
     monkeypatch.setattr(sessions.subprocess, "run", lambda *a, **k: Fail())
-    assert sessions.copy_buffer() == ""
+    assert sessions.copy_buffer() == ("", None)
     def boom(*a, **k):
         raise OSError("tmux 없음")
     monkeypatch.setattr(sessions.subprocess, "run", boom)
-    assert sessions.copy_buffer() == ""
+    assert sessions.copy_buffer() == ("", None)
 
 
-def test_session_agents_는_pane_명령이_codex_인_세션만(monkeypatch):
+def test_session_agents_는_pane_명령이_codex_agy_인_세션만(monkeypatch):
+    """코덱스 = "codex", Antigravity CLI = "agy"(→ anti) 만 잡는다. 클로드(버전 이름·node)·셸은 없는 것."""
     class Out:
         returncode = 0
-        stdout = "kakao\tcodex\nother\t2.1.261\ndev\tzsh\nfrogterminal\tcodex\n"
+        stdout = "kakao\tcodex\nother\t2.1.261\ndev\tzsh\nfrogterminal\tcodex\nlanding\tagy\n"
     monkeypatch.setattr(sessions.subprocess, "run", lambda *a, **k: Out())
-    assert sessions.session_agents() == {"kakao": "codex", "frogterminal": "codex"}
+    assert sessions.session_agents() == {"kakao": "codex", "frogterminal": "codex", "landing": "anti"}
 
 
 def test_session_agents_는_tmux_가_없으면_빈_dict(monkeypatch):
@@ -456,8 +475,41 @@ def test_leave_copy_mode_는_tmux_안에서_판단한다(monkeypatch):
     calls = []
     monkeypatch.setattr(sessions.subprocess, "run", lambda cmd, **k: calls.append(cmd))
     sessions.leave_copy_mode("proj")
-    assert calls == [["tmux", "if-shell", "-F", "-t", "proj", "#{pane_in_mode}",
-                      "send-keys -t proj -X cancel"]]
+    assert calls == [["tmux", "if-shell", "-F", "-t", "=proj:", "#{pane_in_mode}",
+                      "send-keys -t =proj: -X cancel"]]
+
+
+def test_점_든_이름은_다시_붙을_때_정확한_표기로_붙는다(tmp_path, monkeypatch):
+    """'Dr.thesis' 폴더 — new-session -A 가 '-s Dr.thesis' 를 'Dr 세션의 thesis 칸'으로 읽어 이미 켜진
+    세션에 못 붙고 `can't find pane: thesis` 로 끝났다(2026-11-17 다른 사용자 신고)."""
+    root = make_root(tmp_path)
+    (root / "Dr.thesis").mkdir()
+    monkeypatch.setattr(sessions, "list_tmux_sessions", lambda: [])
+    assert sessions.attach_cmd("Dr.thesis", root)[:5] == ["tmux", "new-session", "-A", "-s", "Dr.thesis"]
+    monkeypatch.setattr(sessions, "list_tmux_sessions", lambda: ["Dr.thesis", "Dr"])
+    cmd = sessions.attach_cmd("Dr.thesis", root)
+    assert cmd[:4] == ["tmux", "attach-session", "-t", "=Dr.thesis:"]
+    assert "new-session" not in cmd
+    assert all(cmd[i + 1] == "=Dr.thesis:" for i, a in enumerate(cmd) if a == "-t")
+
+
+@pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux 없음")
+def test_점_든_이름_실제_tmux_로_재접속과_대상(tmp_path):
+    """진짜 tmux(격리 소켓)로 — 켜진 'Dr.thesis' 에 다시 붙는 명령이 성공하고, 옆의 'Dr' 세션은 안 건드린다."""
+    sock = ["-L", f"frogdot-{os.getpid()}"]
+    run = lambda *a: subprocess.run(["tmux", *sock, *a], capture_output=True, text=True, timeout=5)
+    try:
+        run("new-session", "-d", "-s", "Dr.thesis", "sleep 30")
+        run("new-session", "-d", "-s", "Dr", "sleep 30")
+        t = sessions.tmux_target("Dr.thesis")
+        assert run("set-option", "-t", t, "@frogdot", "yes").returncode == 0
+        assert run("show-options", "-v", "-t", "=Dr:", "@frogdot").stdout.strip() == ""
+        assert run("show-options", "-v", "-t", t, "@frogdot").stdout.strip() == "yes"
+        assert run("has-session", "-t", t).returncode == 0
+        assert run("kill-session", "-t", t).returncode == 0
+        assert run("list-sessions", "-F", "#{session_name}").stdout.split() == ["Dr"]
+    finally:
+        run("kill-server")
 
 
 def test_leave_copy_mode_는_실패를_삼킨다(monkeypatch):
@@ -465,3 +517,98 @@ def test_leave_copy_mode_는_실패를_삼킨다(monkeypatch):
         raise OSError("no tmux")
     monkeypatch.setattr(sessions.subprocess, "run", boom)
     sessions.leave_copy_mode("proj")           # 예외 없이 끝난다
+
+
+# ---------- 다른 PC 터미널 배지 — ssh 로 다른 기계에 붙은 세션 ----------
+
+def test_ssh_target_은_옵션을_건너뛰고_목적지_호스트만_뽑는다():
+    assert sessions.ssh_target(["ssh", "-t", "srvpc"]) == "srvpc"
+    assert sessions.ssh_target(["ssh", "srvpc"]) == "srvpc"
+    assert sessions.ssh_target(["ssh", "-p", "2222", "-l", "admin", "winpc"]) == "winpc"
+    assert sessions.ssh_target(["ssh", "-o", "StrictHostKeyChecking=no", "admin@100.67.6.106"]) == "100.67.6.106"
+    assert sessions.ssh_target(["ssh", "ssh://admin@winpc2:22"]) == "winpc2"
+    assert sessions.ssh_target(["ssh", "-tt", "winpc", "cmd"]) == "winpc"     # 원격 명령은 호스트가 아니다
+    assert sessions.ssh_target(["ssh"]) is None
+    assert sessions.ssh_target(["zsh", "-lic", "cl"]) is None
+
+
+def test_ssh_remote_cwd_는_원격_명령의_cd_폴더를_읽는다():
+    assert sessions.ssh_remote_cwd(["ssh", "-t", "srvpc", "cd /d C:\\rproj && cmd"]) == "C:\\rproj"
+    assert sessions.ssh_remote_cwd(["ssh", "-t", "srvpc", 'cd "C:\\my app" && cmd']) == "C:\\my app"
+    assert sessions.ssh_remote_cwd(["ssh", "admin@winpc", "cd", "/srv/app;", "bash"]) == "/srv/app"
+    assert sessions.ssh_remote_cwd(["ssh", "-t", "srvpc"]) is None
+    assert sessions.ssh_remote_cwd(["zsh", "-lic", "cl"]) is None
+
+
+def test_session_remotes_는_ssh_pane_만_시작명령에서_호스트와_폴더를_읽는다(monkeypatch):
+    class Out:
+        returncode = 0
+        stdout = ('srvpc\tssh\t90985\tC:\\rproj\t"ssh -t srvpc"\n'         # @remote_path 옵션이 1순위
+                  'srv\tssh\t90986\t\t"ssh -t winpc \'cd /d D:\\srv && cmd\'"\n'  # 옵션 없으면 원격 명령의 cd
+                  'bare\tssh\t90987\t\t"ssh winpc2"\n'                        # 둘 다 없으면 폴더 None
+                  'frogterminal\t2.1.289\t15124\t\t"zsh -lic \'cl --remote-control frogterminal\'"\n'
+                  'dev\tzsh\t100\t\t""\n')
+    monkeypatch.setattr(sessions.subprocess, "run", lambda *a, **k: Out())
+    assert sessions.session_remotes() == {
+        "srvpc": {"host": "srvpc", "path": "C:\\rproj"},
+        "srv": {"host": "winpc", "path": "D:\\srv"},
+        "bare": {"host": "winpc2", "path": None},
+    }
+
+
+def test_session_remotes_는_셸에서_손으로_친_ssh_도_ps_로_찾는다(monkeypatch):
+    """pane 시작 명령이 셸이고 그 안에서 `ssh winpc` 을 쳤으면 자식 프로세스 인자에서 호스트를 읽는다."""
+    class Tmux:
+        returncode = 0
+        stdout = 'proj\tssh\t500\t\t"zsh -lic \'cl --remote-control proj\'"\n'
+    class Ps:
+        returncode = 0
+        stdout = "    1   500 zsh -lic cl --remote-control proj\n  500   777 ssh -p 2222 winpc\n  500   778 node hud.js\n"
+    monkeypatch.setattr(sessions.subprocess, "run",
+                        lambda cmd, **k: Tmux() if cmd[0] == "tmux" else Ps())
+    assert sessions.session_remotes() == {"proj": {"host": "winpc", "path": None}}
+
+
+def test_session_remotes_는_tmux_가_없으면_빈_dict(monkeypatch):
+    def boom(*a, **k):
+        raise OSError("no tmux")
+    monkeypatch.setattr(sessions.subprocess, "run", boom)
+    assert sessions.session_remotes() == {}
+
+
+def test_merged_sessions_에_host_와_원격폴더가_실리고_로컬은_None(tmp_path, monkeypatch):
+    """맥 로컬 세션은 지금과 똑같이(host=None, path=로컬 폴더) — 배지·원격 폴더는 ssh 세션에만."""
+    monkeypatch.setattr(sessions, "list_tmux_sessions", lambda: ["srvpc", "hotel"])
+    monkeypatch.setattr(sessions, "session_agents", lambda: {})
+    monkeypatch.setattr(sessions, "session_remotes",
+                        lambda: {"srvpc": {"host": "srvpc", "path": "C:\\rproj"}})
+    by = {s["name"]: s for s in sessions.merged_sessions(make_root(tmp_path))}
+    assert by["srvpc"]["host"] == "srvpc" and by["srvpc"]["path"] == "C:\\rproj"
+    assert by["hotel"]["host"] is None and by["hotel"]["path"].endswith("/hotel")
+    assert by["alpha"]["host"] is None
+
+@pytest.mark.parametrize("selected, copied", [
+    ("", None), ("   ", None), (" \n\t\n", None),          # 빈 선택 — 클립보드(방금 찍은 캡처)를 덮지 않는다
+    ("abc", "abc"), ("한글 줄\n둘째 줄", "한글 줄\n둘째 줄"),
+])
+def test_drag_copy_skips_blank_selection(tmp_path, selected, copied):
+    """손이 살짝 움직인 클릭이 빈칸을 pbcopy 로 넘겨 캡처를 덮던 사고(2026-11-08) — 글자가 있을 때만 복사."""
+    fake = tmp_path / "pbcopy"
+    fake.write_text(f"#!/bin/sh\ncat > '{tmp_path}/out'\n")
+    fake.chmod(0o755)
+    subprocess.run(["sh", "-c", sessions._PBCOPY_NONEMPTY], input=selected.encode(), check=True,
+                   env={"PATH": f"{tmp_path}:/usr/bin:/bin"})
+    out = tmp_path / "out"
+    assert (out.read_text() if out.exists() else None) == copied
+    assert sessions._PBCOPY_NONEMPTY in sessions._COPY_BINDS
+
+def test_켜진_세션이_있는_폴더는_마커가_없어도_프로젝트(tmp_path, monkeypatch):
+    """파인더에서 만든 빈 폴더에 세션을 띄우면 숨긴 칸으로 접혀 안 보이던 사고(2026-11-08 avatar)."""
+    root = make_root(tmp_path)
+    (root / "avatar").mkdir()
+    (root / "avatar" / "prompt.md").write_text("메모 하나")
+    (root / "plain").mkdir()
+    monkeypatch.setattr(sessions, "list_tmux_sessions", lambda: ["avatar"])
+    by = {s["name"]: s for s in sessions.merged_sessions(root)}
+    assert by["avatar"]["project"] is True and by["avatar"]["alive"] is True
+    assert by["plain"]["project"] is False             # 꺼진 빈 폴더는 그대로 숨는다

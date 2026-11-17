@@ -31,6 +31,7 @@ for (const [name, get] of Object.entries({
 const isDesktop = () => matchMedia("(min-width: 900px)").matches;
 
 function showView(name) {                     // "term" — 가운데 영역(터미널)을 연다
+  window.officeClose?.(false);                // 사무실 화면(3D 모션)은 터미널에 자리를 내준다(office-view.js)
   document.getElementById("term-view").hidden = name !== "term";
   document.getElementById("list-view").classList.toggle("offscreen", !isDesktop());
   // 빈 가운데 안내(.idle)는 JS 가 단다 — CSS :has() 로 하면 터미널의 초당 수백 DOM 변경마다
@@ -42,6 +43,8 @@ function showList() {                         // 폰 전용 — 목록 전면 (�
   document.getElementById("term-view").hidden = true;
   closeInbox(false);
   document.getElementById("settings-view").hidden = true;
+  // 사무실 화면이 켜져 있으면 그게 가운데 자리다 — 빈 화면 안내(.idle)를 깔면 둘이 폭을 나눠 갖는다
+  if (window.officeShown?.()) { loadSessions(); return; }
   document.getElementById("list-view").classList.remove("offscreen");
   document.getElementById("main").classList.add("idle");
   loadSessions();
@@ -157,6 +160,14 @@ async function loadSessions() {
   }
 }
 
+// [host] 배지 — 사이드바 줄과 위 머리줄이 같은 모양을 쓴다. 호스트명도 textContent 로만 넣는다.
+function hostBadge(host) {
+  const b = el("span", `[${host}]`);
+  b.className = "host";
+  b.title = `다른 PC 터미널 — ssh ${host}`;
+  return b;
+}
+
 function sessionRow(s) {
   const li = document.createElement("li");
   const meta = metaOf(s);
@@ -167,13 +178,17 @@ function sessionRow(s) {
   // 점 채움 = 지금 무언가 살아 있다(결재를 기다리거나·일하거나·끝내고 대기). 빈 원 = 꺼짐.
   // 색·맥박은 CSS 가 상태 클래스로 정한다 — 점 하나가 상태 언어의 전부다(Orca 차용).
   const active = s.alive || ["decision", "working", "done"].includes(s.status);
-  if (s.agent === "codex") li.classList.add("codex");   // 코덱스 세션 = 파란 점(클로드 초록과 구분)
+  // 도는 에이전트가 점 색을 정한다 — 코덱스 = 파랑, 안티그래비티 = 보라(클로드 초록과 구분). CSS li.codex/li.anti
+  if (s.agent === "codex" || s.agent === "anti") li.classList.add(s.agent);
   // 세션 이름·경로는 항상 textContent 로만 넣는다 — 어떤 문자가 와도 HTML 로 해석되지 않게
   // 이름 칸은 [★ 즐겨찾기 표식 | 이름] 한 줄. 표식을 이름 안에 섞지 않는 이유: 이름은 <b> 하나로
   // 온전히 읽혀야 한다(검색·강조·테스트가 전부 <b> 글자를 그대로 본다).
   const nameBox = document.createElement("div");
   nameBox.className = "row-name";
   if (isFav(s)) nameBox.append(el("i", "★"));      // 즐겨찾기 표식 — 한눈에 구분되게 줄 앞머리에
+  // 다른 PC 터미널 — pane 이 ssh 로 다른 기계에 붙어 있으면 이름 앞에 [host] 배지.
+  // 맥 로컬 세션은 host 가 null 이라 배지 없이 지금 모양 그대로다.
+  if (s.host) nameBox.append(hostBadge(s.host));
   nameBox.append(el("b", s.name));
   li.append(nameBox, el("em", active ? "●" : "○"), el("small", oddPath));
   const st = el("span", meta.text(s.pending ?? 0));      // 상태줄 — 진행중·결재대기를 여기서 읽는다
@@ -229,9 +244,11 @@ function askOpen(s, li) {
   box.className = "row-confirm";
   box.onclick = e => e.stopPropagation();
   // 무엇으로 켤지 여기서 고른다 — 설정의 기본 에이전트를 바꾸지 않고 이번 한 번만.
+  // 버튼 색은 각 에이전트 회사의 대표색(agent-* 클래스, style.css) — 글자를 안 읽어도 손이 간다.
   box.append(el("span", `'${s.name}' 터미널을 켭니다 — 꺼져 있던 세션이 새로 시작됩니다.`),
-             actBtn("클로드로 켜기", "", () => openTerminal(s, "claude")),
-             actBtn("코덱스로 켜기", "", () => openTerminal(s, "codex"), "codex --yolo 로 시작"),
+             actBtn("클로드로 켜기", "agent-claude", () => openTerminal(s, "claude")),
+             actBtn("코덱스로 켜기", "agent-codex", () => openTerminal(s, "codex"), "codex --yolo 로 시작"),
+             actBtn("안티로 켜기", "agent-anti", () => openTerminal(s, "anti"), "Antigravity CLI(agy) 로 시작"),
              actBtn("취소", "cancel", () => box.remove()));
   li.append(box);
 }
@@ -407,7 +424,7 @@ async function refreshStatusMeta() {
 // ---------- 터미널 화면 ----------
 // 터미널 하나의 상태(xterm·소켓·타이머·붙여넣기 대기열·IME 거울)는 칸(Pane) 객체가 갖는다(아래
 // '칸' 절). 여기는 화면 공통부(머리줄·탭 바·파일/브라우저 패널)를 활성 칸에 맞추고 칸을 시작시킨다.
-// agent — 이번 접속에서 새로 서는 세션에 띄울 에이전트("claude"·"codex"). 없으면 설정값.
+// agent — 이번 접속에서 새로 서는 세션에 띄울 에이전트("claude"·"codex"·"anti"). 없으면 설정값.
 // 이미 켜진 세션에는 아무 효과가 없다(tmux -A 는 붙기만 한다).
 function openTerminal(s, agent) {
   // 같은 세션은 두 칸에 띄우지 않는다 — 이미 다른 칸에 있으면 그 칸으로 간다(멀티 칸 설계 2026-10-09).
@@ -439,10 +456,14 @@ function openIn(pane, s, agent) {
 function paintHeader() {
   const s = activePane?.session;
   document.getElementById("hdr-name").textContent = s ? baseOf(s.name) : "";
-  document.getElementById("hdr-path").textContent = s ? (s.path ?? "(폴더 없음 — 기존 tmux 세션)")
+  // ssh 로 다른 PC 에 붙은 세션은 경로 줄 앞에 [host] 를 붙여 어느 기계인지 바로 읽히게 한다.
+  const hostTag = s?.host ? `[${s.host}] ` : "";
+  document.getElementById("hdr-path").textContent = s
+    ? hostTag + (s.path ?? (s.host ? "다른 PC 터미널 (ssh)" : "(폴더 없음 — 기존 tmux 세션)"))
     : isGrid() ? "빈 칸 — 칸 위 목록에서 프로젝트를 고르세요" : "";
   renderTabs();
   markActive();
+  if (typeof reportFocus === "function") reportFocus();   // 게임기 frog-agent 가 따라오게(pad.js)
 }
 
 // ---------- 병렬 터미널 탭 — 같은 프로젝트에서 터미널 여러 개 (Zed 차용) ----------
@@ -525,7 +546,7 @@ window.addEventListener("focus", () => {
 // ---------- 새 프로젝트 (사이드바 ＋) ----------
 // 폴더는 <프로젝트 루트>/<이름> 하나만 만든다 — 세션 이름·파일 패널·업로드가 전부 이 폴더 기준이다.
 // 만들자마자 그 터미널을 연다(이름을 정하면 바로 실행). 설정한 시작 에이전트가 뜬다.
-// 무엇으로 시작할지는 입력칸 아래 두 버튼(클로드·코덱스)에서 고른다. Enter = 클로드(기본 그림).
+// 무엇으로 시작할지는 입력칸 아래 세 버튼(클로드·코덱스·안티)에서 고른다. Enter = 클로드(기본 그림).
 const projNewInput = () => document.getElementById("proj-new-name");
 const projNewBox = () => document.getElementById("proj-new-box");
 document.getElementById("proj-new").onclick = () => {
@@ -539,6 +560,7 @@ projNewInput().onkeydown = e => {
 };
 document.getElementById("proj-new-claude").onclick = () => createProject(projNewInput().value.trim(), "claude");
 document.getElementById("proj-new-codex").onclick = () => createProject(projNewInput().value.trim(), "codex");
+document.getElementById("proj-new-anti").onclick = () => createProject(projNewInput().value.trim(), "anti");
 
 async function createProject(name, agent) {
   if (!name) { projNewInput().focus(); return; }
@@ -571,7 +593,7 @@ function showToast(text) {
   showToast.t = setTimeout(() => { el.hidden = true; }, 1600);
 }
 
-async function syncCopyToClipboard(pane = activePane) {
+async function syncCopyToClipboard(pane = activePane, pressedAt = 0) {
   lastCopyAt = Date.now();
   try {
     // 브라우저 자체 선택이 있으면 그것이 정답(⌥드래그). 없으면 tmux 가 방금 고른 것을 받아온다.
@@ -580,7 +602,15 @@ async function syncCopyToClipboard(pane = activePane) {
     if (!text) {
       const res = await fetch(`${API}/api/clipboard`);
       if (!res.ok) return;
-      ({ text = "" } = await res.json());
+      let age;
+      ({ text = "", age } = await res.json());
+      // 이번 누름이 새로 복사한 게 아니면(버퍼가 누르기 전부터 있던 것) 클립보드를 건드리지 않는다.
+      // 실사고(2026-10-24): 캡처 직후 터미널을 누르다 손이 조금 움직였을 뿐인데 어제 버퍼를 써 넣어
+      // 방금 찍은 그림을 덮었다 — ⌘V 가 한 번에 안 들어간 정체. 복사가 아니었으니 Ctrl+C 도 중단신호로 돌린다.
+      if (pressedAt && typeof age === "number" && age > (performance.now() - pressedAt) / 1000 + 1.5) {
+        lastCopyAt = 0;
+        return;
+      }
     }
     if (!text) return;
     await navigator.clipboard.writeText(text);          // writeText 는 권한 팝업 없이 통과한다
@@ -1259,7 +1289,8 @@ async function pasteFromClipboard(pane = activePane) {
   for (let attempt = 0; attempt < 4; attempt++) {
     if (attempt) await new Promise(r => setTimeout(r, 300));
     try {
-      for (const item of await navigator.clipboard.read()) {
+      const items = await navigator.clipboard.read();
+      for (const item of items) {
         const imgType = item.types.find(t => t.startsWith("image/"));
         if (imgType) { pasteImage(await item.getType(imgType), imgType, null, pane); return; }
       }
@@ -1489,7 +1520,9 @@ document.getElementById("sum-pending").onclick = () => {
 document.getElementById("inbox-back").onclick = () => closeInbox();
 
 if (!REDIRECTING) {                          // 문패 화면에선 부르지 않는다 (실패 안내만 깜빡이므로)
-  loadSessions().then(() => gridBoot());     // 첫 목록이 와야 칸을 채울 수 있다 — 기억한 칸 수로 연다(grid.js)
+  // 첫 목록이 와야 칸을 채울 수 있다 — 기억한 칸 수로 연다(grid.js). 사무실 화면은 그 뒤에 되살린다
+  // (칸을 되살리며 터미널을 열면 사무실이 닫히므로 순서가 거꾸로면 켜 둔 사무실이 사라진다).
+  loadSessions().then(() => gridBoot()).then(() => window.officeBoot?.());
   refreshSummary();
   refreshStatusMeta();
   setInterval(poll, 7000);                   // 7초 폴링 — 요약·대시보드는 항상, 목록·인박스는 보일 때만

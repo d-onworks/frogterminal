@@ -98,13 +98,14 @@ class Pane {
     // 영영 안 됐다. 드래그가 끝나면 tmux 버퍼를 읽어 이 브라우저 클립보드에도 넣는다.
     let dragAt = null;
     term.element.addEventListener("mousedown", e => {
-      if (e.button === 0) dragAt = [e.clientX, e.clientY];
+      if (e.button === 0) dragAt = [e.clientX, e.clientY, performance.now()];
     });
     term.element.addEventListener("mouseup", e => {
       if (e.button !== 0 || !dragAt) return;
       const moved = Math.abs(e.clientX - dragAt[0]) + Math.abs(e.clientY - dragAt[1]) > 4;
+      const pressedAt = dragAt[2];
       dragAt = null;
-      if (moved) setTimeout(() => syncCopyToClipboard(this), 120);   // tmux 가 버퍼에 넣을 틈을 준다
+      if (moved) setTimeout(() => syncCopyToClipboard(this, pressedAt), 120);   // tmux 가 버퍼에 넣을 틈을 준다
     });
     this.resizeObs = new ResizeObserver(() => this.resize());   // close 에서 끊는다 (세션마다 쌓이지 않게)
     this.resizeObs.observe(this.host);

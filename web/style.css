@@ -19,6 +19,9 @@
   --green-ink: #06210F;   /* 그린 버튼 위 글자 */
   --amber:     #FFB800;   /* 결재·주의 — 나를 기다리는 것 */
   --blue:      #60A5FA;   /* 코덱스 세션의 점 — 클로드(초록)와 구분 */
+  --anti:      #A78BFA;   /* 안티그래비티 세션의 점·버튼 — 제미나이 보라 */
+  --claude:    #D97757;   /* 회사 대표색 — '○○로 켜기' 버튼 (앤스로픽 테라코타) */
+  --gpt:       #10A37F;   /* (오픈AI·ChatGPT 초록) */
   --amber-bg:  #2B2110;
   --amber-line:#5C4A15;
   --alert:     #FF2E7E;   /* 꺼짐·오류 포인트(드문 강조) */
@@ -48,6 +51,9 @@
   --green-ink: #FFFFFF;
   --amber:     #8A6400;   /* 흰 바탕에서 읽히는 주의색(대비 AA) */
   --blue:      #1D4ED8;
+  --anti:      #6D4FD0;
+  --claude:    #B8532F;   /* 흰 바탕 대비 AA 로 한 단 어둡게 */
+  --gpt:       #0E8A6C;
   --amber-bg:  #FFF4D1;
   --amber-line:#E3C86A;
   --alert:     #D81B60;
@@ -76,6 +82,9 @@
   --green-dk:  #89B665;
   --green-ink: #1B2213;
   --amber:     #E5C07B;
+  --anti:      #C678DD;   /* One Dark 의 보라 */
+  --claude:    #D19A66;   /* One Dark 의 주황 */
+  --gpt:       #56B6C2;   /* One Dark 의 청록 */
   --amber-bg:  #322D1E;
   --amber-line:#6B5D33;
   --alert:     #E06C75;
@@ -153,12 +162,15 @@ button, .tree-row, #sessions li { transition: background .12s, border-color .12s
   color: #241A00; border: 0; border-radius: 6px; font-size: 13px; font-weight: 700; }
 
 /* CPU 버튼(제목 옆) + htop 팝업 */
-#btn-cpu, #btn-killall, #btn-restore {
+#btn-cpu, #btn-killall, #btn-restore, #btn-office {
   background: none; border: 1px solid var(--line-2); border-radius: 6px; color: var(--t3);
   min-height: 32px; padding: 4px 10px; font-size: 13px; font-family: var(--mono);
   white-space: nowrap; flex-shrink: 0; }
 #btn-cpu:hover, #btn-restore:not(:disabled):hover { color: var(--t1); border-color: var(--green); }
 #btn-cpu.on { color: var(--green); border-color: var(--green); }
+#btn-office:hover { color: var(--t1); border-color: var(--green); }
+#btn-office.on { color: var(--green); border-color: var(--green); font-weight: 700; }
+#btn-office .hlabel { margin-left: 5px; }
 #btn-killall:hover { color: var(--alert-tx); border-color: var(--alert); }
 #btn-restore:disabled { opacity: .45; }        /* 복원거리가 없을 때 — 눌러 보고 알게 하지 않는다 */
 #btn-killall .hlabel, #btn-restore .hlabel { margin-left: 5px; }
@@ -305,8 +317,9 @@ button, .tree-row, #sessions li { transition: background .12s, border-color .12s
 #proj-filter:focus, #proj-new-name:focus { outline: none; border-color: var(--green); }
 #proj-new-box[hidden] { display: none; }
 #proj-new-box #proj-new-name { margin-bottom: 6px; }
-.proj-new-acts { display: flex; gap: 6px; margin: 0 12px 8px; }
-.proj-new-acts button { flex: 1; padding: 4px 8px; font-size: 13px; background: none; color: var(--t2);
+/* 버튼이 셋이라 좁은 사이드바에선 둘째 줄로 내려간다 — 글자를 중간에서 꺾지 않는다(nowrap) */
+.proj-new-acts { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 12px 8px; }
+.proj-new-acts button { flex: 1 1 auto; white-space: nowrap; padding: 4px 8px; font-size: 13px; background: none; color: var(--t2);
   border: 1px solid var(--line-2); border-radius: 6px; cursor: pointer; }
 .proj-new-acts button:hover { color: var(--green); border-color: var(--green); }
 #proj-empty { margin: 4px 12px 12px; color: var(--t3); font-size: 13px; }
@@ -332,6 +345,9 @@ button, .tree-row, #sessions li { transition: background .12s, border-color .12s
 /* 즐겨찾기 표식 — 사용자가 맨 위로 올려 둔 줄. 상태 점(왼쪽)과 자리가 달라 서로를 흐리지 않는다 */
 #sessions li .row-name i { flex-shrink: 0; font-style: normal; font-size: 11px;
   line-height: 1; color: var(--amber); }
+/* 다른 PC 터미널 배지 [host] — ssh 로 다른 기계에 붙은 세션. 모노 소문자라 이름(굵은 14px)과 바로 구분된다 */
+#sessions li .row-name .host { flex-shrink: 0; font-family: var(--mono); font-size: 11px;
+  line-height: 1; padding: 1px 4px; border: 1px solid var(--line-2); border-radius: 3px; color: var(--t2); }
 #sessions li em { grid-column: 1; grid-row: 1; font-style: normal; font-size: 10px;
   line-height: 21px; color: var(--green); text-align: center; }
 #sessions li small { color: var(--t3); font-size: 13px; font-family: var(--mono); }
@@ -344,6 +360,7 @@ button, .tree-row, #sessions li { transition: background .12s, border-color .12s
 #sessions li .st.done { color: var(--green); }
 /* 점의 색은 상태가 정한다 — 결재·진행중은 맥박까지 */
 #sessions li.codex em { color: var(--blue); }                /* 코덱스가 도는 세션 — 파란 점 */
+#sessions li.anti em { color: var(--anti); }                 /* 안티그래비티가 도는 세션 — 보라 점 */
 #sessions li:has(.st.off) em { color: var(--t3); }
 #sessions li:has(.st.decision) em { color: var(--amber);
   animation: frog-pulse 1.6s ease-in-out infinite; }
@@ -373,6 +390,16 @@ button, .tree-row, #sessions li { transition: background .12s, border-color .12s
 #sessions li .row-confirm button { margin-left: 6px; padding: 4px 10px; background: var(--alert-bg);
   color: var(--alert-tx); border: 1px solid var(--alert-line); border-radius: 4px; font-size: 13px; }
 #sessions li .row-confirm button.cancel { background: none; border-color: var(--line-2); color: var(--t3); }
+/* '○○로 켜기/시작' — 회사 대표색으로 구분. 세 자리(되묻기·새 프로젝트·칸 고르기)가
+   같은 클래스를 쓴다. 바탕은 비우고 테두리·글자만 색을 입혀 어느 테마에서도 대비가 남는다. */
+.agent-claude { --agent: var(--claude); }
+.agent-codex  { --agent: var(--gpt); }
+.agent-anti   { --agent: var(--anti); }
+#sessions li .row-confirm button[class*="agent-"], .proj-new-acts button[class*="agent-"],
+.pane-ask button[class*="agent-"] { background: none; color: var(--agent); border-color: var(--agent); }
+#sessions li .row-confirm button[class*="agent-"]:hover, .proj-new-acts button[class*="agent-"]:hover,
+.pane-ask button[class*="agent-"]:hover { background: color-mix(in srgb, var(--agent) 18%, transparent);
+  color: var(--agent); border-color: var(--agent); }
 /* 숨긴 항목 — 목록 맨 아래 접이식 */
 #hidden-bar { padding: 10px 12px; border-top: 1px solid var(--line); }
 #hidden-bar button { background: none; border: 0; color: var(--t3); font-size: 13px; padding: 0; }
@@ -781,9 +808,10 @@ button#fp-close:hover { color: var(--t1); }
   /* 사이드바 접기 — 폭을 0 으로 밀어 슬라이드로 사라진다. 인라인 폭(split.js)을
      이겨야 하므로 !important. 터미널이 없는 빈 화면(.idle)에서는 접지 않는다 — 목록마저
      사라지면 아무것도 없는 화면이 된다. 분할선도 같이 접는다(잡을 선만 남으면 헷갈린다). */
-  #main.side-collapsed:not(.idle) #list-view { width: 0 !important; min-width: 0; padding: 0;
+  /* 사무실 화면(.office)도 접지 않는다 — 왼쪽 목록 + 오른쪽 사무실이 그 화면의 짜임이다 */
+  #main.side-collapsed:not(.idle):not(.office) #list-view { width: 0 !important; min-width: 0; padding: 0;
     overflow: hidden; }
-  #main.side-collapsed:not(.idle) .splitter[data-pane="list"] { display: none; }
+  #main.side-collapsed:not(.idle):not(.office) .splitter[data-pane="list"] { display: none; }
   #back { display: none; }                          /* 사이드바가 상시라 뒤로가기가 필요 없다
                                                        (인박스·설정의 ✕ 는 팝업 닫기 — 늘 보인다) */
 }
@@ -794,3 +822,55 @@ button#fp-close:hover { color: var(--t1); }
   .inbox-card .send-btn, .inbox-card .open-btn,
   #fp-edit, #fp-save, #fp-cancel, #fp-view-close { min-height: 32px; padding-top: 5px; padding-bottom: 5px; }
 }
+
+/* ---------- 3D 모션 모드 — 사무실 화면(office-view.js) ----------
+   그림(사무실·캐릭터)이 밝은 색이라 테마와 상관없이 밝은 바탕 위에 둔다. 그림 바깥 여백색과 같게.
+   왼쪽 = 프로젝트 목록(그대로), 가운데 = 사무실, 오른쪽 = 사무실 사람들 + 활동 로그. */
+#office-view { flex: 1; min-width: 0; display: flex; background: #EDEFF1; color: #24302A; }
+#office-view[hidden] { display: none; }
+#office-stage { flex: 1; min-width: 0; position: relative; overflow: hidden; }
+#office-canvas { position: absolute; inset: 0; display: block; touch-action: manipulation; }
+#office-bar { position: absolute; left: 12px; top: 10px; z-index: 1; margin: 0; max-width: calc(100% - 24px);
+  padding: 6px 10px; font-size: 13px; line-height: 1.4; color: #24302A; background: rgba(255, 255, 255, .9);
+  border: 1px solid rgba(20, 30, 25, .14); border-radius: 6px; pointer-events: none; }
+#office-side { width: 300px; flex-shrink: 0; display: flex; flex-direction: column; gap: 6px; min-height: 0;
+  padding: 10px 10px 0; background: #FFFFFF; border-left: 1px solid rgba(20, 30, 25, .1); }
+#office-side h3 { display: flex; align-items: baseline; gap: 8px; margin: 2px 2px 0; font-size: 13px;
+  font-weight: 700; color: #1E2622; }
+#office-side h3 small { font-size: 12px; font-weight: 500; color: #5B6660; }
+#office-side .o-live { color: #15803D; font-weight: 700; animation: frog-pulse 1.6s ease-in-out infinite; }
+#office-people, #office-log { list-style: none; margin: 0; padding: 0; overflow-y: auto; }
+#office-people { max-height: 46%; flex-shrink: 0; border-bottom: 1px solid #E8ECEA; padding-bottom: 6px; }
+#office-log { flex: 1; min-height: 0; }
+.o-person { padding: 6px 8px; border-radius: 6px; cursor: pointer; border: 1px solid transparent; }
+.o-person:hover { background: #F3F6F4; border-color: rgba(20, 30, 25, .08); }
+.o-head { display: flex; align-items: center; gap: 6px; font-size: 13px; min-width: 0; }
+.o-head b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.o-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+.o-chip { flex-shrink: 0; padding: 1px 6px; border-radius: 4px; font-size: 11px; background: #EEF1EF; color: #4B5752; }
+.o-chip.work { background: #E3F4E9; color: #17733A; }
+.o-chip.ask { background: #FDE7EA; color: #B4192F; }
+.o-chip.sub { background: #EEF0FF; color: #3B4CC0; }
+.o-doing, .o-sub { margin: 3px 0 0 14px; font-size: 12px; color: #3E4A44; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; }
+.o-doing.ask { color: #B4192F; }
+.o-sub { margin-left: 20px; color: #5B6660; }
+.o-log { display: grid; grid-template-columns: auto auto auto 1fr; align-items: baseline; gap: 0 6px;
+  padding: 5px 2px; font-size: 12px; border-bottom: 1px solid #F0F2F1; }
+.o-log time { font-family: var(--mono); font-size: 11px; color: #6E7973; }
+.o-log b { font-weight: 600; max-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.o-log span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #33403A; }
+.o-log .o-ev { color: #6B3FA0; font-weight: 600; }
+.o-log.fresh { animation: o-log-in .6s ease-out; }
+@keyframes o-log-in { from { opacity: 0; transform: translateY(-6px); background: #E6F6EC; } to { opacity: 1; transform: none; } }
+@media (max-width: 1180px) { #office-side { width: 250px; } }
+/* 사무실을 보는 동안 터미널 곁 패널(파일·브라우저)은 접어 둔다 — 열린 상태는 그대로 기억된다 */
+#main.office #file-panel, #main.office #browser-panel,
+#main.office .splitter[data-pane="file"], #main.office .splitter[data-pane="browser"] { display: none; }
+@media (max-width: 899px) { #office-view { width: 100%; } #office-side { display: none; } }
+/* 캐릭터를 눌러 터미널로 — 사무실이 가운데로 빨려 들어간 뒤 터미널이 가운데서 펼쳐진다(맥 독 지니처럼) */
+#term-view.genie-in { animation: frog-genie-in .42s cubic-bezier(.2, .9, .3, 1.12) both; transform-origin: 50% 50%; }
+@keyframes frog-genie-in { from { transform: scale(.08); opacity: 0; } 40% { opacity: 1; } to { transform: none; opacity: 1; } }
+#office-side { transition: opacity .45s ease-in; }
+#office-side.o-fade { opacity: 0; }
+@media (prefers-reduced-motion: reduce) { #term-view.genie-in { animation: none; } }

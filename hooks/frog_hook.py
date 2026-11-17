@@ -71,6 +71,20 @@ def is_claude(comm: str) -> bool:
     return "claude" in comm.lower()
 
 
+def is_agent(comm: str) -> bool:
+    """카드의 주인이 될 수 있는 프로세스인가 — 클로드, 또는 코덱스 본체(실행파일 이름이 codex).
+
+    이 훅은 ~/.codex/hooks.json 에도 걸려 있어 코덱스도 같은 카드를 쓴다. 클로드가 `codex exec`
+    로 코덱스를 자식으로 띄우면 훅의 조상은 python → codex → … → claude 순이다. 예전엔 클로드만
+    주인으로 쳐서 코덱스 카드에 **부모 클로드의 pid** 가 적혔고, 코덱스가 죽어도(pkill·중단) 그
+    '진행중' 카드가 부모 클로드가 사는 한 살아있음으로 판정돼 프로젝트가 영영 '진행중…'이었다
+    (실측 2026-10-20: 11:49 코덱스 카드 → 다음날까지 진행중). 가장 가까운 에이전트를
+    주인으로 적으면 코덱스가 끝나는 순간 그 카드는 죽은 것으로 빠진다.
+    ChatGPT.app 의 'Codex Framework' 같은 이름은 경로 끝이 codex 가 아니라 걸리지 않는다.
+    """
+    return is_claude(comm) or os.path.basename(comm) == "codex"
+
+
 def parse_ps(text: str) -> dict:
     """'pid ppid <lstart 5토막> comm' → {pid: (ppid, lstart, comm)}."""
     table = {}
@@ -87,7 +101,7 @@ def parse_ps(text: str) -> dict:
 
 
 def owner_process(table: dict, start_pid: int) -> tuple:
-    """조상을 거슬러 올라가 처음 만나는 클로드 프로세스의 (pid, 시작시각). 못 찾으면 (None, None).
+    """조상을 거슬러 올라가 처음 만나는 에이전트(클로드·코덱스)의 (pid, 시작시각). 못 찾으면 (None, None).
 
     훅은 보통 클로드 → sh → python 이라 두세 칸 위에 있다. 셸 재실행 등으로 더 깊어질 수 있어
     여유를 두되, 순환(있을 수 없지만)에 갇히지 않게 횟수로 끊는다.
@@ -98,7 +112,7 @@ def owner_process(table: dict, start_pid: int) -> tuple:
         if not row:
             return None, None
         ppid, start, comm = row
-        if is_claude(comm):
+        if is_agent(comm):                        # 가장 가까운 에이전트 — 코덱스 자식이면 코덱스
             return pid, start
         if ppid <= 1:
             return None, None
@@ -185,13 +199,18 @@ def main() -> None:
         # 대화 압축도 일이다(실측 2m19s) — 그동안은 '진행중'이 맞다. 압축엔 Stop 이 안 울리므로
         # 끝났다는 말은 SessionStart(source=compact)가 대신 해준다. 자동 압축은 그 뒤로 하던 일이
         # 이어지니 손대지 않게, 어느 쪽이었는지를 카드에 적어 둔다.
+        # 단 '쉬는 동안 압축'(idleCompaction)도 trigger=auto 로 온다 — 앞 카드가 이미 완료·대기였다면
+        # 이어질 일이 없으니 수동처럼 다룬다(실측 2026-10-25: 진행중에 묶임).
         kind, msg = "working", ""
-        extra = {"compactTrigger": str(data.get("trigger") or "")}
+        trigger = str(data.get("trigger") or "")
+        if trigger == "auto" and prior_card(path).get("kind") in ("done", "idle"):
+            trigger = "idle"
+        extra = {"compactTrigger": trigger}
     elif event == "SessionStart":
         # 세션이 프롬프트 앞에 섰다 = 다음 지시 대기. 단 자동 압축은 턴 한가운데서 일어나 압축이
         # 끝나면 하던 일을 계속하므로, 그때는 '진행중' 카드를 그대로 둔다(끝은 Stop 이 알린다).
         if (str(data.get("source") or "") == "compact"
-                and prior_card(path).get("compactTrigger") != "manual"):
+                and prior_card(path).get("compactTrigger") not in ("manual", "idle")):
             return
         kind, msg = "done", ""
     else:

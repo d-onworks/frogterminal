@@ -407,30 +407,66 @@ def test_업데이트_실행은_별칭없이_고정_리스트인자만_쓴다(mo
     assert "shell" not in calls[0][1]
 
 
-CSWAP_OUT = """\
-A newer version of claude-swap is available (0.25.0). You are using 0.24.0. Run `cswap upgrade` to update.
-Status: Account-2 (me@example.com [me@example.com's Organization])
-  Total managed accounts: 2
-  ├ 5h:     38%   resets 04:19         in 3h 34m
-  ├ 7d:     26%   resets Aug 20 22:59  in 5d 22h
-  └ Fable:  17%   resets Aug 20 22:59  in 5d 22h
-"""
+USAGE_JSON = {
+    "schemaVersion": 2,
+    "accounts": {
+        "1": {"email": "me@example.com", "fetchedAt": 1_000_000.0,
+              "lastGood": {"five_hour": {"pct": 15.0, "resets_at": "2026-10-12T23:00:00+00:00", "clock": "08:00"},
+                           "seven_day": {"pct": 19.0, "resets_at": "2026-10-18T15:00:00+00:00", "clock": "Oct 19 00:00"},
+                           "scoped": [{"name": "Fable", "pct": 4.0, "resets_at": "2026-10-18T15:00:00+00:00",
+                                       "clock": "Oct 19 00:00"}]}},
+        "2": {"email": "work@example.com", "fetchedAt": 1_000_100.0,
+              "lastGood": {"five_hour": {"pct": 38.0, "resets_at": "2026-10-12T23:00:00+00:00", "clock": "04:19"},
+                           "seven_day": {"pct": 26.0, "resets_at": "2026-10-18T15:00:00+00:00", "clock": "Aug 20 22:59"},
+                           "scoped": []}},
+    },
+}
+NOW = 1_000_200.0
 
 
-def test_parse_usage_는_cswap_실측_출력을_읽는다():
-    got = settings.parse_usage(CSWAP_OUT)
+def test_parse_usage_는_캐시_파일을_읽고_로그인_계정을_고른다():
+    got = settings.parse_usage(USAGE_JSON, "me@example.com", now=NOW)
     assert got["account"] == "me@example.com"
-    assert got["windows"] == [
-        {"name": "5h", "pct": 38, "reset": "04:19", "left": "3h 34m"},
-        {"name": "7d", "pct": 26, "reset": "Aug 20 22:59", "left": "5d 22h"},
-        {"name": "Fable", "pct": 17, "reset": "Aug 20 22:59", "left": "5d 22h"},
-    ]
+    assert [(w["name"], w["pct"], w["reset"]) for w in got["windows"]] == [
+        ("5h", 15, "08:00"), ("7d", 19, "Oct 19 00:00"), ("Fable", 4, "Oct 19 00:00")]
+    assert all(w["left"].endswith("h") for w in got["windows"])   # NOW(1970년대) 기준 며칠 뒤 — "Nd Nh" 꼴로 다시 센다
 
 
-def test_parse_usage_형식이_다르면_빈값():
-    """cswap 이 출력을 바꿔도 상태바가 이상한 숫자를 지어내지 않는다 — 그 칸을 접을 뿐."""
-    assert settings.parse_usage("") == {}
-    assert settings.parse_usage("Status: Account-1 (a@b.c)") == {}   # 창구 줄이 없으면 빈 값
+def test_parse_usage_는_로그인_계정이_없으면_가장_최근_것():
+    assert settings.parse_usage(USAGE_JSON, "", now=NOW)["account"] == "work@example.com"
+    assert settings.parse_usage(USAGE_JSON, "nobody@x.y", now=NOW)["account"] == "work@example.com"
+
+
+def test_parse_usage_는_낡은_캐시와_이상한_형식에_빈값():
+    """cswap 이 멈춰 캐시가 안 갱신되면 그 숫자를 지금 값인 양 보여 주지 않는다 — 칸을 접을 뿐."""
+    assert settings.parse_usage(USAGE_JSON, "me@example.com", now=NOW + settings.USAGE_STALE_S + 1) == {}
+    assert settings.parse_usage({}, "", now=NOW) == {}
+    assert settings.parse_usage({"accounts": []}, "", now=NOW) == {}
+    assert settings.parse_usage({"accounts": {"1": {"email": "a@b", "fetchedAt": NOW, "lastGood": {}}}}, "", now=NOW) == {}
+    assert settings.parse_usage("garbage", "", now=NOW) == {}
+
+
+def test_countdown_은_절대시각으로_다시_센다():
+    assert settings._countdown("2026-10-12T23:00:00+00:00", 1_791_836_425.0) == "2h 39m"   # 캐시 실측과 같은 값
+    assert settings._countdown("2026-10-18T15:00:00+00:00", 1_791_836_425.0) == "5d 18h"
+    assert settings._countdown(None, 0) == "" and settings._countdown("not-a-date", 0) == ""
+
+
+def test_probe_usage_는_파일만_읽고_어떤_명령도_실행하지_않는다(tmp_path, monkeypatch):
+    """★ 2026-10-13 05:25 사고 — 5분마다 돌던 `cswap status` 가 라이브 토큰을 소비해 claude -p 크론 4시간 전멸.
+    cswap 링크가 다시 살아나도 브릿지는 실행 자체를 하지 않는다."""
+    def boom(*a, **k):
+        raise AssertionError("subprocess 가 불렸다")
+    monkeypatch.setattr(settings.subprocess, "run", boom)
+    monkeypatch.setattr(settings.shutil, "which", lambda *a, **k: "/usr/local/bin/cswap")
+    f = tmp_path / "usage.json"; f.write_text(json.dumps(USAGE_JSON))
+    cj = tmp_path / "claude.json"; cj.write_text('{"oauthAccount": {"emailAddress": "work@example.com"}}')
+    monkeypatch.setattr(settings, "USAGE_FILE", f)
+    monkeypatch.setattr(settings, "CLAUDE_JSON", cj)
+    monkeypatch.setattr(settings.time, "time", lambda: NOW)
+    assert settings.probe_usage()["account"] == "work@example.com"
+    monkeypatch.setattr(settings, "USAGE_FILE", tmp_path / "없음.json")
+    assert settings.probe_usage() == {}
 
 
 def test_status_는_TTL_동안_캐시(monkeypatch):
@@ -459,3 +495,19 @@ def test_save_는_타입이_틀린_값을_ValueError_로_거절(settings_file, p
 def test_save_는_불리언만_그대로_저장(settings_file):
     assert settings.save({"bypass": False, "rc": True})["bypass"] is False
     assert settings.load()["rc"] is True
+
+
+def test_anti_시작_명령은_agy_에_bypass_만_붙고_이어가기는_안_붙는다(settings_file, tmp_path):
+    """Antigravity CLI(agy 1.4.0)는 클로드와 같은 --dangerously-skip-permissions 를 쓴다. --continue 는
+    폴더 기준인지 확인되지 않아 붙이지 않는다(엉뚱한 프로젝트 대화를 이을 위험). RC 도 클로드만."""
+    cwd = tmp_path / "proj"
+    cwd.mkdir()
+    assert settings.AGENTS["anti"] == "agy"
+    assert settings.launch_command("anti", "proj", cwd=cwd) == "agy --dangerously-skip-permissions"
+    settings.save({"rc": True})                      # RC 켜도 anti 명령은 그대로
+    assert settings.launch_command("anti", "proj", cwd=cwd) == "agy --dangerously-skip-permissions"
+    settings.save({"bypass": False})
+    assert settings.launch_command("anti", "proj", cwd=cwd) == "agy"
+    assert settings.save({"agent": "anti"})["agent"] == "anti"   # 기본 에이전트로도 고를 수 있다
+    with pytest.raises(settings.InvalidAlias):       # agy 는 보호 명령 — 별칭 이름으로 못 쓴다
+        settings.save({"commands": {"claude": "agy"}})

@@ -54,14 +54,16 @@ const TERM_THEMES = {
     brightYellow: "#FFD34D", brightBlue: "#93CBFF", brightMagenta: "#FF9FC8",
     brightCyan: "#83E3EA", brightWhite: "#E8ECE9",
   },
-  light: {                                      // One Light — 화이트 UI 와 짝
-    background: "#FFFFFF", foreground: "#383A42", cursor: "#15803D", cursorAccent: "#FFFFFF",
-    selectionBackground: "#D5E5F0",
-    black: "#383A42", red: "#E45649", green: "#50A14F", yellow: "#C18401",
-    blue: "#0184BC", magenta: "#A626A4", cyan: "#0997B3", white: "#FAFAFA",
-    brightBlack: "#696C77", brightRed: "#E45649", brightGreen: "#50A14F",
-    brightYellow: "#C18401", brightBlue: "#0184BC", brightMagenta: "#A626A4",
-    brightCyan: "#0997B3", brightWhite: "#FFFFFF",
+  // One Light 를 진하게 — 프로젝터에서 회색 글자가 날아갔다. 본문은 거의 검정,
+  // 색 글자도 한 단계씩 어둡게. 클로드가 직접 찍는 연회색(트루컬러)은 아래 minimumContrastRatio 가 끌어내린다.
+  light: {
+    background: "#FFFFFF", foreground: "#111111", cursor: "#15803D", cursorAccent: "#FFFFFF",
+    selectionBackground: "#C9DDF0",
+    black: "#111111", red: "#C4302B", green: "#2E7D32", yellow: "#8A5A00",
+    blue: "#005F99", magenta: "#8A1C88", cyan: "#00707F", white: "#FAFAFA",
+    brightBlack: "#4A4D55", brightRed: "#C4302B", brightGreen: "#2E7D32",
+    brightYellow: "#8A5A00", brightBlue: "#005F99", brightMagenta: "#8A1C88",
+    brightCyan: "#00707F", brightWhite: "#FFFFFF",
   },
 };
 
@@ -72,6 +74,9 @@ function termOptions() {
     fontSize: Math.max(10, Math.min(22, p.fontSize | 0 || 14)),
     fontFamily: TERM_FONTS[p.font] ?? TERM_FONTS.d2,
     theme: TERM_THEMES[p.termTheme] ?? TERM_THEMES.onedark,
+    // 밝은 바탕에선 글자 대비를 최소 7:1 로 강제한다(WCAG AAA) — 테마 밖 트루컬러 회색(클로드 힌트·상태줄)까지
+    // xterm 이 자동으로 어둡게 그린다. 어두운 테마는 원래 색 그대로(1).
+    minimumContrastRatio: p.termTheme === "light" ? 7 : 1,
     // ⌥+드래그 = 브라우저 자체 선택. tmux 가 mouse on 이라 맨 드래그는 tmux 가 가져가는데,
     // 화면 밖(스크롤백)이나 여러 pane 을 가로질러 긁고 싶을 때의 탈출구다(맥 터미널 관례).
     macOptionClickForcesSelection: true,
@@ -102,10 +107,11 @@ function applyPrefs() {
 }
 
 // ---------- 서버 설정 (세션 시작) ----------
-const AGENT_LABEL = { claude: "클로드", codex: "코덱스", shell: "셸만" };
+const AGENT_LABEL = { claude: "클로드", codex: "코덱스", anti: "안티그래비티", shell: "셸만" };
 const AGENT_DESC = {
   claude: "Claude Code를 바로 시작",
   codex: "Codex CLI를 바로 시작",
+  anti: "Antigravity CLI(agy)를 바로 시작",
   shell: "빈 셸 — 직접 입력",
 };
 

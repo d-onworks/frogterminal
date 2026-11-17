@@ -191,6 +191,18 @@ def test_자동압축은_하던_일이_이어지므로_진행중을_유지한다
     assert card_of(tmp_path, "s7")["kind"] == "working"
 
 
+def test_쉬는_중_자동압축은_끝나면_다시_완료로_내려온다(tmp_path):
+    """클로드 코드의 '쉬는 동안 압축'(idleCompaction)도 trigger=auto 로 온다 — 하던 일이 없으니
+    압축이 끝나면 완료로 돌아가야 한다 (실측 2026-10-25: 진행중에 묶임)."""
+    run_hook(tmp_path, {"hook_event_name": "Stop", "session_id": "s9", "cwd": "/tmp"})
+    run_hook(tmp_path, {"hook_event_name": "PreCompact", "session_id": "s9",
+                        "cwd": "/tmp", "trigger": "auto"})
+    assert card_of(tmp_path, "s9")["kind"] == "working"
+    run_hook(tmp_path, {"hook_event_name": "SessionStart", "session_id": "s9",
+                        "cwd": "/tmp", "source": "compact"})
+    assert card_of(tmp_path, "s9")["kind"] == "done"
+
+
 def test_새_세션은_시작하자마자_완료_대기로_보인다(tmp_path):
     """startup·resume·clear 는 프롬프트 앞에 선 상태다. 압축이 아니면 앞 카드도 보지 않는다."""
     for source in ("startup", "resume", "clear"):
@@ -299,3 +311,31 @@ def test_transcript_path_를_카드에_그대로_저장한다(tmp_path):
 def test_transcript_path_가_없어도_카드는_정상(tmp_path):
     run_hook(tmp_path, {"hook_event_name": "Stop", "session_id": "s2", "cwd": "/tmp"})
     assert card_of(tmp_path, "s2")["transcriptPath"] == ""
+
+
+def test_owner_process_는_클로드가_띄운_코덱스_카드의_주인을_코덱스로_적는다():
+    """클로드 → sh → codex exec → sh → python(훅). 주인은 부모 클로드가 아니라 코덱스여야 한다.
+
+    부모 클로드 pid 를 적으면 코덱스가 죽어도 카드가 '살아있음'으로 남아 프로젝트가 영영
+    '진행중…'이 된다(실측 2026-10-20 — /clear 뒤 '꼭 진행중'으로 남던 원인)."""
+    table = {
+        1833: (69917, "Fri Aug 14 23:05:03 2026", "claude"),
+        2001: (1833, "Fri Aug 14 23:30:00 2026", "/bin/zsh"),
+        2002: (2001, "Fri Aug 14 23:30:01 2026",
+               "/Users/x/.codex/packages/standalone/releases/0.163.0/bin/codex"),
+        2003: (2002, "Fri Aug 14 23:30:02 2026", "/bin/sh"),
+        2004: (2003, "Fri Aug 14 23:30:03 2026", "/opt/homebrew/.../Python"),
+    }
+    assert frog_hook.owner_process(table, 2004) == (2002, "Fri Aug 14 23:30:01 2026")
+    # 코덱스 없이 클로드만 있으면 지금처럼 클로드
+    del table[2002]; table[2003] = (2001, "t", "/bin/sh")
+    assert frog_hook.owner_process(table, 2004) == (1833, "Fri Aug 14 23:05:03 2026")
+
+
+def test_is_agent_는_codex_실행파일만_잡고_비슷한_이름은_안_잡는다():
+    assert frog_hook.is_agent("/Users/x/.local/bin/codex")
+    assert frog_hook.is_agent("codex")
+    assert frog_hook.is_agent("/Users/x/.local/share/claude/versions/2.1.232")
+    assert not frog_hook.is_agent("/Applications/ChatGPT.app/.../Codex Framework.framework/Helpers/browser_crashpad_handler")
+    assert not frog_hook.is_agent("/Users/x/.codex/packages/app-server-daemon/.../bin/codex-code-mode-host")
+    assert not frog_hook.is_agent("/bin/zsh")

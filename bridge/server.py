@@ -17,8 +17,8 @@ from pathlib import Path
 
 from aiohttp import WSMsgType, web
 
-from bridge import (agent_updates, browser_api, config, decisions, files, locate, preview_api, restore,
-                    security, sessions, settings, uploads)
+from bridge import (agent_updates, browser_api, config, decisions, files, locate, office, pad_api, preview_api,
+                    remote_files, restore, security, sessions, settings, uploads)
 
 log = logging.getLogger("frogterminal")
 
@@ -127,6 +127,38 @@ STATIC_FILES = {
     "/files.js": ("files.js", "text/javascript"),
     "/browser.js": ("browser.js", "text/javascript"),
     "/remote.js": ("remote.js", "text/javascript"),
+    "/pad.js": ("pad.js", "text/javascript"),                     # 게임패드 신호 롱폴 → 칸 이동
+    "/office-world.js": ("office-world.js", "text/javascript"),   # 3D 모션 모드 — 사무실 지도·대사·색
+    "/office-atlas.js": ("office-atlas.js", "text/javascript"),   # 그림 칸 규격(process_assets.py 자동 생성)
+    "/office-life.js": ("office-life.js", "text/javascript"),     # 하루 — 걷기·할 일·수다·꼬마
+    "/office-view.js": ("office-view.js", "text/javascript"),     # 그리기·오른쪽 로그·지니 효과
+    # 사무실 그림(scripts/office/process_assets.py 가 만든다) — 이름을 하나씩 적는다(폴더 통째 서빙 금지)
+    "/office/floor.webp": ("office/floor.webp", "image/webp"),
+    "/office/frog.webp": ("office/frog.webp", "image/webp"),
+    "/office/frog-key.webp": ("office/frog-key.webp", "image/webp"),
+    "/office/frog2.webp": ("office/frog2.webp", "image/webp"),
+    "/office/frog2-key.webp": ("office/frog2-key.webp", "image/webp"),
+    "/office/frog3.webp": ("office/frog3.webp", "image/webp"),
+    "/office/frog3-key.webp": ("office/frog3-key.webp", "image/webp"),
+    "/office/frogmini.webp": ("office/frogmini.webp", "image/webp"),
+    "/office/frogmini-key.webp": ("office/frogmini-key.webp", "image/webp"),
+    "/office/frogwalk.webp": ("office/frogwalk.webp", "image/webp"),
+    "/office/frogwalk-key.webp": ("office/frogwalk-key.webp", "image/webp"),
+    "/office/capy.webp": ("office/capy.webp", "image/webp"),
+    "/office/capy-key.webp": ("office/capy-key.webp", "image/webp"),
+    "/office/capy2.webp": ("office/capy2.webp", "image/webp"),
+    "/office/capy2-key.webp": ("office/capy2-key.webp", "image/webp"),
+    "/office/capy3.webp": ("office/capy3.webp", "image/webp"),
+    "/office/capy3-key.webp": ("office/capy3-key.webp", "image/webp"),
+    "/office/capymini.webp": ("office/capymini.webp", "image/webp"),
+    "/office/capymini-key.webp": ("office/capymini-key.webp", "image/webp"),
+    "/office/capywalk.webp": ("office/capywalk.webp", "image/webp"),
+    "/office/capywalk-key.webp": ("office/capywalk-key.webp", "image/webp"),
+    "/office/frogphone.webp": ("office/frogphone.webp", "image/webp"),
+    "/office/frogphone-key.webp": ("office/frogphone-key.webp", "image/webp"),
+    "/office/capyphone.webp": ("office/capyphone.webp", "image/webp"),
+    "/office/capyphone-key.webp": ("office/capyphone-key.webp", "image/webp"),
+    "/office/chairs.webp": ("office/chairs.webp", "image/webp"),
     "/config.js": ("config.js", "text/javascript"),
     "/style.css": ("style.css", "text/css"),
     "/manifest.json": ("manifest.json", "application/manifest+json"),  # PWA 설치(독 앱)
@@ -261,6 +293,17 @@ async def api_sessions(request):
         s["status"] = st["status"] if st else ("on" if s["alive"] else "off")
         s["pending"] = st["pending"] if st else 0
     return web.json_response({"sessions": items, "restorable": restorable})
+
+
+async def api_office(request):
+    """3D 모션 모드 — 켜진 프로젝트마다 캐릭터 한 명분(상태·결재 문구·커밋 수·일하는 서브에이전트).
+
+    화면이 사무실을 보는 동안에만 4초마다 부른다. 결재 집계는 사이드바와 같은 캐시를 쓰고, 커밋 수는
+    office 가 10분 캐시한다 — git·대화 파일 읽기는 루프 밖에서.
+    """
+    items = await asyncio.to_thread(sessions.merged_sessions)
+    ov = await request.app[OVERVIEW].get()
+    return web.json_response(await asyncio.to_thread(office.snapshot, items, ov))
 
 
 async def api_decisions(request):
@@ -426,7 +469,7 @@ async def api_agent_update(request):
 
 
 async def api_usage(request):
-    """클로드 사용량(레이트리밋) — cswap 출력 읽기 전용, 5분 캐시. 없으면 빈 값."""
+    """클로드 사용량(레이트리밋) — cswap 캐시 파일 읽기 전용(명령 실행 없음), 5분 캐시. 없으면 빈 값."""
     return web.json_response({"usage": await asyncio.to_thread(settings.usage)})
 
 
@@ -531,6 +574,8 @@ async def api_mkdir(request):
     if body is None:
         return web.json_response({"error": "bad body"}, status=400)
     project, path = str(body.get("project", "")), str(body.get("path", ""))
+    if await asyncio.to_thread(remote_files.remote_of, project):      # 다른 PC 폴더는 읽기 전용
+        return web.json_response({"error": "ReadOnly", "reason": "다른 PC 에는 여기서 폴더를 만들 수 없습니다"}, status=405)
     try:
         await asyncio.to_thread(files.make_dir, project, path)
     except files.NotAllowed:
@@ -554,17 +599,40 @@ def _file_error(exc):
     return web.json_response({"error": type(exc).__name__}, status=_FILE_ERRORS[type(exc)])
 
 
+# 다른 PC 터미널(ssh 세션 + 원격 폴더)의 파일 패널은 그 PC 에 물어본다 — 읽기 전용.
+# 판정(remote_of)은 tmux 한 번이라 싸고, ssh 왕복은 스레드로 보내 이벤트 루프(터미널 소켓)를 안 막는다.
+# 로컬 프로젝트 폴더가 실재하면 remote_of 가 None 이라 지금 경로 그대로다.
+def _remote_unavailable(host) -> web.Response:
+    return web.json_response({"error": "RemoteUnavailable",
+                              "reason": f"원격 PC({host})에 연결하지 못했습니다 — 켜져 있고 테일넷에 붙어 있는지 보세요"},
+                             status=502)
+
+
 async def api_files(request):
+    project, rel = request.query.get("project", ""), request.query.get("path", "")
     try:
-        entries = files.list_dir(request.query.get("project", ""), request.query.get("path", ""))
+        remote = await asyncio.to_thread(remote_files.remote_of, project)
+        if remote:
+            entries = await asyncio.to_thread(remote_files.list_dir, remote, rel)
+        else:
+            entries = files.list_dir(project, rel)
+    except remote_files.RemoteUnavailable as e:
+        return _remote_unavailable(e)
     except tuple(_FILE_ERRORS) as e:
         return _file_error(e)
     return web.json_response({"entries": entries})
 
 
 async def api_file_get(request):
+    project, rel = request.query.get("project", ""), request.query.get("path", "")
     try:
-        got = files.read_text(request.query.get("project", ""), request.query.get("path", ""))
+        remote = await asyncio.to_thread(remote_files.remote_of, project)
+        if remote:
+            got = await asyncio.to_thread(remote_files.read_text, remote, rel)
+        else:
+            got = files.read_text(project, rel)
+    except remote_files.RemoteUnavailable as e:
+        return _remote_unavailable(e)
     except tuple(_FILE_ERRORS) as e:
         return _file_error(e)
     return web.json_response(got)
@@ -602,6 +670,8 @@ async def api_file_put(request):
         return web.json_response({"error": "baseMtimeNs must be string"}, status=400)
     project, path = str(body.get("project", "")), str(body.get("path", ""))
     content = str(body.get("content", ""))
+    if await asyncio.to_thread(remote_files.remote_of, project):      # 다른 PC 폴더는 읽기 전용
+        return web.json_response({"error": "ReadOnly", "reason": "다른 PC 의 파일은 여기서 저장할 수 없습니다 — 터미널 안에서 고치세요"}, status=405)
     try:
         mtime = files.write_text(project, path, content, base)
     except (TypeError, ValueError):
@@ -649,7 +719,8 @@ async def api_clipboard(request):
 
     읽기 전용이고, 이미 터미널 전체를 볼 수 있는 화면에만 열리므로 새로 드러나는 것은 없다.
     """
-    return web.json_response({"text": await asyncio.to_thread(sessions.copy_buffer)})
+    text, age = await asyncio.to_thread(sessions.copy_buffer)
+    return web.json_response({"text": text, "age": age})
 
 
 async def api_project_new(request):
@@ -898,6 +969,7 @@ def create_app() -> web.Application:
     app.router.add_get("/api/usage", api_usage)
     app.router.add_get("/api/hud", api_hud)        # 여러 칸일 때 웹 하단 공통 HUD(계정 줄)
     app.router.add_get("/api/decisions", api_decisions)
+    app.router.add_get("/api/office", api_office)          # 3D 모션 모드(사무실 화면)
     app.router.add_post("/api/decisions/answer", api_decision_answer)
     app.router.add_get("/api/files", api_files)
     app.router.add_post("/api/open", api_open)
@@ -915,6 +987,7 @@ def create_app() -> web.Application:
     app.router.add_get("/ws/{name}", ws_terminal)
     preview_api.add_routes(app)                   # 브라우저 패널 1단계 — /api/preview/* (별도 모듈)
     browser_api.add_routes(app)                   # 브라우저 패널 2단계 — /api/browser/*, /ws/browser/* (CDP 크롬)
+    pad_api.add_routes(app)                       # 게임패드 칸 이동 — /api/pad, /api/pad/wait (패드 상주 프로그램)
     return app
 
 
@@ -922,7 +995,8 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO)
     security.assert_safe_to_start()                   # Funnel 게이트 — 확인 안 되면 안 뜬다
     sessions.clear_compact_all()                  # 지난 실행의 '여러 칸' 표시 — 보던 칸들이 다시 붙으며 새로 단다
-    web.run_app(create_app(), host=config.BIND_HOST, port=config.PORT)
+    web.run_app(create_app(), host=config.BIND_HOST, port=config.PORT,
+                access_log=None)                  # 접근 로그 끔 — HUD 폴링이 err.log 를 하루 11MB씩 키움(2026-10-19)
 
 
 if __name__ == "__main__":

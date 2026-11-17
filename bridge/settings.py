@@ -28,7 +28,8 @@ from bridge import config, sessions
 # 잠겨 있지만 셸 파일에 쓰는 값이므로, 신원과 별개로 식별자 화이트리스트를 반드시 거친다.
 # frogterminal 자체가 tmux·mdfind·launchd 에 의존하는 맥 전용 도구이고 세션도 zsh -lic 로
 # 실행하므로, 사용자의 기본 셸이 달라도 관리 대상은 의도적으로 ~/.zshrc 하나로 고정한다.
-AGENTS = {"claude": "claude", "codex": "codex", "shell": None}
+# anti = 구글 Antigravity CLI(실행 파일 이름 agy). 키는 화면·설정·?agent= 에 쓰는 이름, 값이 실제 명령.
+AGENTS = {"claude": "claude", "codex": "codex", "anti": "agy", "shell": None}
 DEFAULTS = {"agent": "claude",               # 이 앱의 세션 = 클로드 세션이 기본 그림
             # bypass 기본 켬 — Orca 도 전 에이전트에 전권한 플래그를 기본 적용한다("세션이 곧
             # 작업 격리"라는 판단). 실사용도 늘 bypass 다. 설정에서 끌 수 있다.
@@ -49,7 +50,7 @@ _ALIAS_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,31}$")
 # 로그인 셸의 뼈대·권한 상승·파일 변경·앱의 실제 실행 파일만 막는 최소 목록이다. 모든 설치
 # 프로그램을 동적으로 막으면 사용자가 만든 새 약칭도 기기마다 달리 거부되므로 고정 목록을 쓴다.
 PROTECTED_COMMANDS = frozenset({
-    "alias", "bash", "cd", "claude", "codex", "command", "cp", "eval", "exec", "exit",
+    "agy", "alias", "bash", "cd", "claude", "codex", "command", "cp", "eval", "exec", "exit",
     "git", "kill", "ls", "mv", "rm", "sh", "source", "sudo", "tmux", "unalias", "zsh",
 })
 _LEGACY_COMMENT = "# frogterminal — 클로드 약칭"
@@ -349,6 +350,10 @@ def launch_command(agent: str, session: str = "", cfg: dict | None = None,
         # 코덱스의 전권한 = --yolo(= --dangerously-bypass-approvals-and-sandbox 의 별칭, 0.153 실측).
         # 클로드의 bypass 와 같은 스위치 하나로 간다 — "권한 확인 없이"라는 뜻이 둘 다 같다.
         return f"{cmd} --yolo" if cfg["bypass"] else cmd
+    if agent == "anti":
+        # Antigravity CLI(agy 1.4.0 실측)는 클로드와 같은 이름의 전권한 플래그를 쓴다. 이어가기(-c)는
+        # 폴더 기준인지 확인되지 않아 붙이지 않는다 — 엉뚱한 프로젝트 대화를 이을 위험이 더 크다.
+        return f"{cmd} --dangerously-skip-permissions" if cfg["bypass"] else cmd
     if agent != "claude":
         return cmd
     if cfg["bypass"]:
@@ -479,38 +484,86 @@ def invalidate_status() -> None:
 
 
 # ── 클로드 사용량(레이트리밋) — Orca 의 상태바 차용 ─────────────────────────
-# cswap(claude-swap, 이 맥의 계정 전환기)이 이미 창구별 사용량을 집계한다. 실측 출력:
-#   Status: Account-2 (me@example.com [me@example.com's Organization])
-#     ├ 5h:     38%   resets 04:19         in 3h 34m
-#     └ Fable:  17%   resets Aug 20 22:59  in 5d 22h
-# 이 출력만 읽는다(쓰기·전환 없음). cswap 이 없거나 형식이 바뀌면 조용히 빈 값 — 상태바가 그 칸을 접는다.
+# ★ cswap(claude-swap) 을 실행하지 않는다 — 파일만 읽는다(2026-10-14).
+#   2026-10-13 05:25 브릿지의 5분 주기 `cswap status` 가 라이브 리프레시 토큰을 소비해 맥의 claude -p 크론이
+#   4시간 전멸했다(cswap status 의 복구 분기가 백업 grant 를 POST 한다). 그래서 cswap 이 다시 살아나도 여기서는
+#   절대 부르지 않는다. 원천은 cswap 이 써 두는 캐시 `~/.claude-swap-backup/cache/usage.json`(statusline.py 와
+#   같은 파일) — 활성 계정은 실제 로그인(~/.claude.json 의 oauthAccount.emailAddress)으로 고른다.
+#   캐시가 없거나·형식이 다르거나·너무 오래됐으면(USAGE_STALE_S) 빈 값 — 상태바가 그 칸을 접는다(거짓 숫자 금지).
+USAGE_FILE = Path.home() / ".claude-swap-backup" / "cache" / "usage.json"
+CLAUDE_JSON = Path.home() / ".claude.json"
+USAGE_STALE_S = 3 * 3600
+_OAUTH_EMAIL_RE = re.compile(r'"oauthAccount"\s*:\s*\{[^}]*?"emailAddress"\s*:\s*"([^"]+)"')
 
-_USAGE_LINE_RE = re.compile(
-    r"^\s*[├└│|]?\s*(?P<name>[A-Za-z0-9가-힣]+):\s+(?P<pct>\d{1,3})%.*?"
-    r"resets\s+(?P<reset>.*?)\s+in\s+(?P<left>.+?)\s*$")
-_USAGE_ACCOUNT_RE = re.compile(r"^Status:\s+\S+\s+\((?P<email>[^\s\[\)]+)")
+
+def _countdown(resets_at: str | None, now: float) -> str:
+    """절대시각(resets_at, ISO) → "2h 39m"/"5d 18h". 캐시의 countdown 문자열은 수집 시점에 굳은 값이라 다시 센다."""
+    if not resets_at:
+        return ""
+    try:
+        from datetime import datetime
+        left = int(datetime.fromisoformat(resets_at).timestamp() - now)
+    except (ValueError, TypeError, OverflowError):
+        return ""
+    if left <= 0:
+        return "0m"
+    d, h, m = left // 86400, left % 86400 // 3600, left % 3600 // 60
+    return f"{d}d {h}h" if d else f"{h}h {m}m"
 
 
-def parse_usage(text: str) -> dict:
-    account, windows = "", []
-    for line in text.splitlines():
-        if m := _USAGE_ACCOUNT_RE.match(line.strip()):
-            account = m.group("email")[:120]
-        elif m := _USAGE_LINE_RE.match(line):
-            windows.append({"name": m.group("name")[:20], "pct": min(999, int(m.group("pct"))),
-                            "reset": m.group("reset").strip()[:40], "left": m.group("left")[:40]})
-    return {"account": account, "windows": windows} if windows else {}
+def _login_email(claude_json: Path | None = None) -> str:
+    try:
+        m = _OAUTH_EMAIL_RE.search((claude_json or CLAUDE_JSON).read_text(encoding="utf-8"))
+    except OSError:
+        return ""
+    return m.group(1).strip().lower() if m else ""
+
+
+def parse_usage(data, login_email: str = "", now: float | None = None) -> dict:
+    """usage.json(schemaVersion 2) → {"account", "windows":[{name,pct,reset,left}]}. 못 읽으면 {}.
+
+    계정은 로그인 이메일과 같은 것, 없으면 가장 최근에 받아온 것. 창구는 5h·7d·scoped(Fable 등) 순.
+    """
+    now = time.time() if now is None else now
+    accounts = (data or {}).get("accounts") if isinstance(data, dict) else None
+    if not isinstance(accounts, dict) or not accounts:
+        return {}
+    acc = None
+    if login_email:
+        acc = next((a for a in accounts.values()
+                    if isinstance(a, dict) and (a.get("email") or "").strip().lower() == login_email), None)
+    if acc is None:
+        acc = max((a for a in accounts.values() if isinstance(a, dict)),
+                  key=lambda a: a.get("fetchedAt") or 0, default=None)
+    if not acc:
+        return {}
+    fetched = acc.get("fetchedAt")
+    if not isinstance(fetched, (int, float)) or now - fetched > USAGE_STALE_S:
+        return {}                                     # 낡은 숫자를 지금 값인 양 보여 주지 않는다
+    good = acc.get("lastGood") or {}
+    if not isinstance(good, dict):
+        return {}
+    windows = []
+    def add(name, w):
+        if isinstance(w, dict) and isinstance(w.get("pct"), (int, float)):
+            windows.append({"name": str(name)[:20], "pct": min(999, int(w["pct"])),
+                            "reset": str(w.get("clock") or "")[:40],
+                            "left": _countdown(w.get("resets_at"), now)[:40]})
+    add("5h", good.get("five_hour"))
+    add("7d", good.get("seven_day"))
+    for sc in good.get("scoped") or []:
+        if isinstance(sc, dict):
+            add(sc.get("name") or "?", sc)
+    return {"account": str(acc.get("email") or "")[:120], "windows": windows} if windows else {}
 
 
 def probe_usage() -> dict:
-    binary = which("cswap")
-    if not binary:
-        return {}
+    """캐시 파일 읽기만 — 어떤 명령도 실행하지 않는다(위 ★)."""
     try:
-        out = subprocess.run([binary, "status"], capture_output=True, text=True, timeout=20)
-    except (OSError, subprocess.SubprocessError):
+        data = json.loads(USAGE_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
         return {}
-    return parse_usage(out.stdout) if out.returncode == 0 else {}
+    return parse_usage(data, _login_email())
 
 
 _USAGE_CACHE: list = [0.0, None]

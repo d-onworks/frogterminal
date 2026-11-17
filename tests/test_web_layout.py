@@ -1102,7 +1102,7 @@ def test_긴_맥락은_대시보드에서_접혀_있다가_펴진다(desktop):
 # ---------- 설정 화면 ----------
 
 def test_설정에서_시작_에이전트를_고른다(desktop, bridge):
-    """⚙️ → 시작 에이전트(클로드·코덱스·셸) 선택이 서버로 저장되고, 연결 상태가 읽힌다."""
+    """⚙️ → 시작 에이전트(클로드·코덱스·안티·셸) 선택이 서버로 저장되고, 연결 상태가 읽힌다."""
     bridge.agent_posts.clear()
     bridge.agent = "claude"
     try:
@@ -1111,7 +1111,8 @@ def test_설정에서_시작_에이전트를_고른다(desktop, bridge):
         assert desktop.is_visible("#settings-view")
         assert desktop.is_visible("#sessions")           # 사이드바는 남는다 (데스크톱 3열)
         choices = desktop.locator("#set-agent .set-choice")      # 다른 무리(테마·글꼴)와 섞이지 않게
-        assert choices.count() == 3
+        assert choices.count() == 4                              # 클로드·코덱스·안티그래비티·셸만
+        assert choices.nth(2).text_content().startswith("안티그래비티")
         assert "on" in choices.nth(0).get_attribute("class")     # 현재 설정 = 클로드
         choices.nth(1).click()                                   # 코덱스로 바꾼다
         desktop.wait_for_timeout(400)
@@ -2539,3 +2540,92 @@ def test_브라우저_패널_열림은_프로젝트마다_따로_기억된다(de
     desktop.wait_for_selector("#browser-panel", state="visible")
     desktop.click("#bp-close")                                   # ✕ 로 닫으면 mall 만 닫힌다
     desktop.wait_for_selector("#browser-panel", state="hidden")
+
+
+# ---------- 다른 PC 터미널 배지 — ssh 로 다른 기계에 붙은 세션 ----------
+
+def test_ssh_세션은_이름앞_host_배지_로컬세션은_그대로(desktop):
+    """브릿지가 host 를 실어 주면 사이드바 줄 앞과 위 머리줄에 [host] 가 붙고, host 가 없는 맥 로컬 줄은
+    배지 없이 지금 모양(이름 <b> 하나) 그대로다."""
+    item = {"name": "srvpc", "alive": True, "path": None, "status": "on", "pending": 0,
+            "host": "srvpc"}                         # tmux new -s srvpc "ssh -t srvpc"
+    SESSIONS.append(item)
+    try:
+        desktop.evaluate("loadSessions()")
+        desktop.wait_for_timeout(400)
+        row = desktop.locator("#sessions li", has_text="srvpc")
+        assert row.count() == 1
+        badge = row.locator(".row-name .host")
+        assert badge.text_content() == "[srvpc]"
+        # 배지는 이름 앞 — 이름 칸의 첫 글자가 '[' 로 시작한다
+        assert row.locator(".row-name").text_content().startswith("[srvpc]srvpc")
+        assert row.locator("b").text_content() == "srvpc"          # 이름 <b> 는 온전히 이름만
+        # 로컬 세션 줄(host 없음)에는 배지가 하나도 없다 — 회귀 방지
+        assert desktop.locator("#sessions li .row-name .host").count() == 1
+        # 열면 위 머리줄의 경로 자리에도 [host] 가 선다
+        row.click()
+        desktop.wait_for_selector(".xterm-helper-textarea", state="attached")
+        assert desktop.text_content("#hdr-name") == "srvpc"
+        assert desktop.text_content("#hdr-path") == "[srvpc] 다른 PC 터미널 (ssh)"
+        # 원격 폴더(@remote_path 또는 ssh 원격 명령의 cd)를 알면 그 경로가 줄 아래와 머리줄에 선다 —
+        # "서버 PC 의 C:\\work 프로젝트"처럼 폴더까지 매칭돼 보여야 한다
+        item["path"] = "C:\\rproj"
+        desktop.evaluate("showList(); loadSessions()")
+        desktop.wait_for_timeout(400)
+        row = desktop.locator("#sessions li", has_text="srvpc")
+        assert row.locator("small").text_content() == "C:\\rproj"
+        row.click()
+        desktop.wait_for_selector(".xterm-helper-textarea", state="attached")
+        assert desktop.text_content("#hdr-path") == "[srvpc] C:\\rproj"
+    finally:
+        SESSIONS.remove(item)
+        desktop.evaluate("showList(); loadSessions()")
+
+
+def test_켜기_버튼은_클로드_코덱스_안티_셋이고_회사색_클래스를_입는다(desktop, bridge):
+    """꺼진 프로젝트를 누르면 '○○로 켜기' 가 세 개(클로드·코덱스·안티) 서고, 각 버튼은 회사 대표색을
+    입히는 agent-* 클래스를 단다. '안티로 켜기' 는 ?agent=anti 로 붙는다."""
+    row = row_of(desktop, 4)                                        # apex — 꺼짐
+    row.locator("b").click()
+    desktop.wait_for_timeout(300)
+    btns = row.locator(".row-confirm button")
+    labels = [btns.nth(i).text_content() for i in range(btns.count())]
+    assert labels == ["클로드로 켜기", "코덱스로 켜기", "안티로 켜기", "취소"]
+    assert row.locator(".row-confirm button.agent-claude").text_content() == "클로드로 켜기"
+    assert row.locator(".row-confirm button.agent-codex").text_content() == "코덱스로 켜기"
+    assert row.locator(".row-confirm button.agent-anti").text_content() == "안티로 켜기"
+    # 세 버튼의 글자색이 서로 다르다 — 토큰(--claude·--gpt·--anti)이 실제로 먹는지
+    colors = {cls: desktop.evaluate(
+        f"getComputedStyle(document.querySelector('#sessions li .row-confirm button.{cls}')).color")
+        for cls in ("agent-claude", "agent-codex", "agent-anti")}
+    assert len(set(colors.values())) == 3, colors
+    row.locator(".row-confirm button.agent-anti").click()
+    desktop.wait_for_selector(".xterm-helper-textarea", state="attached")
+    assert bridge.ws_agents[-1] == "anti"
+    # 새 프로젝트 칸에도 같은 세 버튼·같은 클래스
+    desktop.evaluate("showList()")
+    new_btns = desktop.locator(".proj-new-acts button")
+    assert [new_btns.nth(i).text_content() for i in range(new_btns.count())] == \
+        ["클로드로 시작", "코덱스로 시작", "안티로 시작"]
+    assert desktop.locator(".proj-new-acts button.agent-anti").get_attribute("id") == "proj-new-anti"
+
+
+def test_안티_세션은_보라_점_코덱스는_파란_점(desktop):
+    """브릿지가 agent 를 실어 주면 줄 앞의 점 색이 에이전트를 말한다 — 클로드(기본)·코덱스·안티가 셋 다 다르다."""
+    anti = {"name": "landing", "alive": True, "path": "/tmp/landing", "status": "on", "pending": 0,
+            "agent": "anti"}
+    codex = {"name": "kakao", "alive": True, "path": "/tmp/kakao", "status": "on", "pending": 0,
+             "agent": "codex"}
+    SESSIONS.extend([anti, codex])
+    try:
+        desktop.evaluate("loadSessions()")
+        desktop.wait_for_timeout(400)
+        assert desktop.locator("#sessions li.anti", has_text="landing").count() == 1
+        assert desktop.locator("#sessions li.codex", has_text="kakao").count() == 1
+        dot = lambda name: desktop.evaluate(
+            f"getComputedStyle([...document.querySelectorAll('#sessions li')]"
+            f".find(li => li.dataset.name === '{name}').querySelector('em')).color")
+        assert len({dot("landing"), dot("kakao"), dot("frog")}) == 3     # 보라·파랑·초록
+    finally:
+        SESSIONS.remove(anti); SESSIONS.remove(codex)
+        desktop.evaluate("loadSessions()")

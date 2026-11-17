@@ -18,6 +18,8 @@ from pathlib import Path
 
 import pytest
 
+from bridge import pad_api
+
 WEB_DIR = Path(__file__).parent.parent / "web"
 STATIC = {
     "/": ("index.html", "text/html"),
@@ -31,9 +33,60 @@ STATIC = {
     "/files.js": ("files.js", "text/javascript"),
     "/browser.js": ("browser.js", "text/javascript"),
     "/remote.js": ("remote.js", "text/javascript"),
+    "/pad.js": ("pad.js", "text/javascript"),
+    "/office-world.js": ("office-world.js", "text/javascript"),
+    "/office-atlas.js": ("office-atlas.js", "text/javascript"),
+    "/office-life.js": ("office-life.js", "text/javascript"),
+    "/office-view.js": ("office-view.js", "text/javascript"),
+    "/office/floor.webp": ("office/floor.webp", "image/webp"),
+    "/office/frog.webp": ("office/frog.webp", "image/webp"),
+    "/office/frog-key.webp": ("office/frog-key.webp", "image/webp"),
+    "/office/frog2.webp": ("office/frog2.webp", "image/webp"),
+    "/office/frog2-key.webp": ("office/frog2-key.webp", "image/webp"),
+    "/office/frog3.webp": ("office/frog3.webp", "image/webp"),
+    "/office/frog3-key.webp": ("office/frog3-key.webp", "image/webp"),
+    "/office/frogmini.webp": ("office/frogmini.webp", "image/webp"),
+    "/office/frogmini-key.webp": ("office/frogmini-key.webp", "image/webp"),
+    "/office/frogwalk.webp": ("office/frogwalk.webp", "image/webp"),
+    "/office/frogwalk-key.webp": ("office/frogwalk-key.webp", "image/webp"),
+    "/office/capy.webp": ("office/capy.webp", "image/webp"),
+    "/office/capy-key.webp": ("office/capy-key.webp", "image/webp"),
+    "/office/capy2.webp": ("office/capy2.webp", "image/webp"),
+    "/office/capy2-key.webp": ("office/capy2-key.webp", "image/webp"),
+    "/office/capy3.webp": ("office/capy3.webp", "image/webp"),
+    "/office/capy3-key.webp": ("office/capy3-key.webp", "image/webp"),
+    "/office/capymini.webp": ("office/capymini.webp", "image/webp"),
+    "/office/capymini-key.webp": ("office/capymini-key.webp", "image/webp"),
+    "/office/capywalk.webp": ("office/capywalk.webp", "image/webp"),
+    "/office/capywalk-key.webp": ("office/capywalk-key.webp", "image/webp"),
+    "/office/frogphone.webp": ("office/frogphone.webp", "image/webp"),
+    "/office/frogphone-key.webp": ("office/frogphone-key.webp", "image/webp"),
+    "/office/capyphone.webp": ("office/capyphone.webp", "image/webp"),
+    "/office/capyphone-key.webp": ("office/capyphone-key.webp", "image/webp"),
+    "/office/chairs.webp": ("office/chairs.webp", "image/webp"),
     "/config.js": ("config.js", "text/javascript"),
     "/style.css": ("style.css", "text/css"),
 }
+
+# 3D 모션 모드(사무실) — 진짜 브릿지 /api/office(bridge/office.py)와 같은 모양. 켜진 프로젝트만 온다.
+# wiki = 결재 대기(묻는 말이 20자를 넘는다 — 화면이 20자 + … 로 자르는지), mall = 일하는 중 + 서브에이전트
+# 셋(꼬마들이 줄 선다), frog = 쉬는 중, blog = 커밋 적은 저장소(꼬마 캐릭터).
+def office_people() -> list[dict]:
+    return [
+        {"name": "wiki", "agent": "claude", "status": "decision", "pending": 1,
+         "ask": "이 파일을 지울까요? 낡은 초안 파일 정리 중입니다", "commits": 120, "kid": False,
+         "subs": [], "subCount": 0, "path": "/tmp/wiki", "host": None},
+        {"name": "mall", "agent": "codex", "status": "working", "pending": 0, "ask": "", "commits": 300,
+         "kid": False, "subs": [{"id": f"m{i}", "type": "Explore", "desc": f"조사 {i}", "doing": "🔍 'seat' 찾는 중"}
+                                for i in range(3)],
+         "subCount": 3, "path": "/tmp/mall", "host": None, "doing": "📖 office-view.js 읽는 중",
+         "log": [{"at": "2026-10-22T01:40:00Z", "text": "📖 app.js 읽는 중"},
+                 {"at": "2026-10-22T01:40:05Z", "text": "📖 office-view.js 읽는 중"}]},
+        {"name": "frog", "agent": "claude", "status": "done", "pending": 0, "ask": "", "commits": 210,
+         "kid": False, "subs": [], "subCount": 0, "path": "/tmp/frog", "host": None},
+        {"name": "blog", "agent": "claude", "status": "done", "pending": 0, "ask": "", "commits": 8,
+         "kid": True, "subs": [], "subCount": 0, "path": "/tmp/blog", "host": None},
+    ]
 
 # 일부러 뒤섞어 둔다 — 정렬(결재>진행중>완료>그 외)은 화면이 하는 일이라는 것을 테스트가 증명해야 한다.
 # 이름은 '가나다순과 상태순이 정반대'가 되게 골랐다(이름순: apex<blog<frog<mall<wiki,
@@ -160,6 +213,7 @@ class FakeBridge:
         self.received = bytearray()
         self.ws_open = 0
         self.ws_log: list[str] = []
+        self.ws_agents: list[str | None] = []          # 접속마다 ?agent= (사이드바 '○○로 켜기' 가 넘긴 값)
         self.killed: set[str] = set()                   # 진짜 브릿지의 KILLED — 끈 세션에 저절로 붙기를 4410 으로 닫는다
         self.by_session: dict[str, bytearray] = {}      # 세션별 받은 바이트 — 멀티 칸에서 입력이 제 칸으로만 가는지
         self.ws_text: list[str] = []
@@ -182,8 +236,11 @@ class FakeBridge:
         self.uploads: list[dict] = []                   # 붙여넣기 업로드(project·파일명) 전부
         self.web_version = 1                            # 프론트 버전 — 올리면 새 배포 배너가 떠야 한다
         self.copy_buffer = ""                           # tmux 복사 버퍼(드래그로 고른 글자)
+        self.copy_age: float | None = None              # 그 버퍼가 만들어진 지 몇 초(None = 응답에 안 싣는다)
         self.new_projects: list[str] = []                # 새 프로젝트 POST 로 온 이름들
         self.cache = {"bytes": 3 * 1024 * 1024, "files": 7}   # 붙여넣기 캐시 현황(설정 화면)
+        self.office = office_people()                   # 사무실 화면 데이터 — 테스트가 바꿔 끼운다
+        self.office_calls = 0                           # /api/office 를 부른 횟수(꺼져 있으면 안 불러야 한다)
         self.cache_cleared = 0                          # 캐시 비우기 요청 횟수
         self.captures: list[dict] = []                  # 캡처 원본 조회(가로·세로) 전부
         self.capture_path = ""                          # 있으면 '캡처 원본을 찾았다'는 응답
@@ -269,7 +326,12 @@ def bridge(tmp_path_factory):
 
     async def static_file(request):
         name, ctype = STATIC[request.path]
-        return web.Response(body=(WEB_DIR / name).read_bytes(), content_type=ctype, charset="utf-8")
+        charset = None if ctype.startswith("image/") else "utf-8"   # 진짜 브릿지와 같게 — 그림엔 charset 없음
+        return web.Response(body=(WEB_DIR / name).read_bytes(), content_type=ctype, charset=charset)
+
+    async def api_office(request):
+        state["bridge"].office_calls += 1
+        return web.json_response({"people": state["bridge"].office})
 
     async def api_sessions(request):
         # 진짜 브릿지와 같게 — 숨긴 것도 목록에 남기고 'hidden' 표시만 붙인다(접는 것은 화면의 몫).
@@ -359,14 +421,14 @@ def bridge(tmp_path_factory):
                 bridge.projects_root = body["projectsRoot"]
             # 진짜 브릿지와 같은 규칙 — 에이전트 목록 밖 값은 400, 나머지 키는 부분 갱신
             if "agent" in body:
-                if body["agent"] not in ("claude", "codex", "shell"):
+                if body["agent"] not in ("claude", "codex", "anti", "shell"):
                     return web.json_response({"error": "unknown agent"}, status=400)
                 bridge.agent = body["agent"]
             for key in ("bypass", "cont", "rc"):
                 if key in body:
                     bridge.flags[key] = body[key] is True
             if isinstance(body.get("commands"), dict):
-                protected = {"alias", "bash", "cd", "claude", "codex", "command", "cp", "eval",
+                protected = {"agy", "alias", "bash", "cd", "claude", "codex", "command", "cp", "eval",
                              "exec", "exit", "git", "kill", "ls", "mv", "rm", "sh", "source",
                              "sudo", "tmux", "unalias", "zsh"}
                 for value in body["commands"].values():
@@ -380,7 +442,7 @@ def bridge(tmp_path_factory):
         return web.json_response({"settings": {"projectsRoot": bridge.projects_root,
                                                "agent": bridge.agent, **bridge.flags,
                                                "commands": dict(bridge.commands)},
-                                  "agents": ["claude", "codex", "shell"]})
+                                  "agents": ["claude", "codex", "anti", "shell"]})
 
     async def api_agents(request):
         # 실측 형태 그대로(bridge/settings.probe) — 화면이 이 모양에 기대 그린다
@@ -433,7 +495,8 @@ def bridge(tmp_path_factory):
         return web.json_response(resp)
 
     async def api_clipboard(request):
-        return web.json_response({"text": state["bridge"].copy_buffer})
+        b = state["bridge"]
+        return web.json_response({"text": b.copy_buffer, **({} if b.copy_age is None else {"age": b.copy_age})})
 
     async def api_project_new(request):
         body = await request.json()
@@ -619,6 +682,7 @@ def bridge(tmp_path_factory):
         await ws.prepare(request)
         bridge.ws_open += 1                                 # 세션을 갈아탈 때 소켓이 겹치는지 본다
         bridge.ws_log.append(request.match_info["name"])
+        bridge.ws_agents.append(request.query.get("agent"))
         await ws.send_bytes(b"\x1b[?1000h\x1b[?1006h$ ")   # tmux 처럼 마우스 리포트 on + 프롬프트
         try:
             async for msg in ws:
@@ -663,6 +727,8 @@ def bridge(tmp_path_factory):
         app.router.add_get("/api/uploads", api_uploads_usage)
         app.router.add_post("/api/uploads/clear", api_uploads_clear)
         app.router.add_get("/api/decisions", api_decisions)
+        app.router.add_get("/api/office", api_office)
+        pad_api.add_routes(app)                       # 게임패드 신호 — 진짜 모듈 그대로
         app.router.add_post("/api/decisions/answer", api_decision_answer)
         app.router.add_get("/ws/browser/{project}", ws_browser)
         app.router.add_post("/api/browser/{project}/stop", api_browser_stop)

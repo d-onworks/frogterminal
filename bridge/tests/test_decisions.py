@@ -311,7 +311,7 @@ def test_send_answer_option은_숫자키_전송(monkeypatch):
     monkeypatch.setattr(decisions, "capture_pane", lambda name: CLAUDE_PERMISSION)
     monkeypatch.setattr(decisions, "_tmux", lambda *a: calls.append(a))
     decisions.send_answer("alpha", "option", "2")
-    assert calls == [("send-keys", "-t", "alpha", "2")]
+    assert calls == [("send-keys", "-t", "=alpha:", "2")]
 
 
 def test_send_answer_option은_화면에_피커가_있을때만_보낸다(monkeypatch):
@@ -347,7 +347,7 @@ def test_send_answer_text는_피커가_없어도_보낸다(monkeypatch):
     monkeypatch.setattr(decisions, "capture_pane", lambda name: "$ ")
     monkeypatch.setattr(decisions, "_tmux", lambda *a: calls.append(a))
     decisions.send_answer("alpha", "text", "진행해")
-    assert calls[0][:3] == ("send-keys", "-t", "alpha")
+    assert calls[0][:3] == ("send-keys", "-t", "=alpha:")
 
 
 @pytest.mark.parametrize("value", ["10", "12", "99", "0"])
@@ -370,8 +370,8 @@ def test_send_answer_text는_literal_후_enter(monkeypatch):
     monkeypatch.setattr(decisions.sessions, "list_tmux_sessions", lambda: ["alpha"])
     monkeypatch.setattr(decisions, "_tmux", lambda *a: calls.append(a))
     decisions.send_answer("alpha", "text", "좋아 진행해\n-단 테스트 먼저")
-    assert calls == [("send-keys", "-t", "alpha", "-l", "--", "좋아 진행해 -단 테스트 먼저"),
-                     ("send-keys", "-t", "alpha", "Enter")]
+    assert calls == [("send-keys", "-t", "=alpha:", "-l", "--", "좋아 진행해 -단 테스트 먼저"),
+                     ("send-keys", "-t", "=alpha:", "Enter")]
 
 
 def test_send_answer_text_제어문자는_pty에_닿지_않는다(monkeypatch):
@@ -379,8 +379,8 @@ def test_send_answer_text_제어문자는_pty에_닿지_않는다(monkeypatch):
     monkeypatch.setattr(decisions.sessions, "list_tmux_sessions", lambda: ["alpha"])
     monkeypatch.setattr(decisions, "_tmux", lambda *a: calls.append(a))
     decisions.send_answer("alpha", "text", "중단\x03해줘 \x1b[31m빨강\r\n다음줄​")
-    assert calls == [("send-keys", "-t", "alpha", "-l", "--", "중단해줘 [31m빨강 다음줄"),
-                     ("send-keys", "-t", "alpha", "Enter")]
+    assert calls == [("send-keys", "-t", "=alpha:", "-l", "--", "중단해줘 [31m빨강 다음줄"),
+                     ("send-keys", "-t", "=alpha:", "Enter")]
     sent = "".join(arg for call in calls for arg in call)
     assert not any(ch in sent for ch in ("\x03", "\x1b", "\r", "​"))
 

@@ -38,6 +38,9 @@ try { var frogUi = JSON.parse(localStorage.getItem("frog.prefs") || "{}").ui;
       data-n="6" title="6칸 (3×2)">6</button><button data-n="8" title="8칸 (4×2)">8</button></span>
   <span id="sum-alive">세션 –</span>
   <button id="sum-pending">결재 –</button>
+  <!-- 3D 사무실 모드 — 가운데를 사무실 화면으로(office-view.js). 왼쪽 목록은 그대로, 캐릭터를 누르면 그 터미널로 -->
+  <button id="btn-office" aria-pressed="false" title="3D 사무실 — 프로젝트가 캐릭터로 일하는 사무실 화면">
+    <span aria-hidden="true">🏢</span><span class="hlabel">3D 사무실</span></button>
   <button id="btn-settings" title="설정">⚙️</button>
 </header>
 
@@ -64,8 +67,9 @@ try { var frogUi = JSON.parse(localStorage.getItem("frog.prefs") || "{}").ui;
     <input id="proj-new-name" type="text" placeholder="새 프로젝트 이름 — Enter 는 클로드로"
          autocomplete="off" autocapitalize="off" spellcheck="false">
     <div class="proj-new-acts">
-      <button id="proj-new-claude" title="claude 로 시작">클로드로 시작</button>
-      <button id="proj-new-codex" title="codex --yolo 로 시작">코덱스로 시작</button>
+      <button id="proj-new-claude" class="agent-claude" title="claude 로 시작">클로드로 시작</button>
+      <button id="proj-new-codex" class="agent-codex" title="codex --yolo 로 시작">코덱스로 시작</button>
+      <button id="proj-new-anti" class="agent-anti" title="Antigravity CLI(agy) 로 시작">안티로 시작</button>
     </div>
   </div>
   <input id="proj-filter" type="search" placeholder="프로젝트 검색" autocomplete="off" spellcheck="false">
@@ -110,6 +114,21 @@ try { var frogUi = JSON.parse(localStorage.getItem("frog.prefs") || "{}").ui;
     <button data-seq="\r">⏎</button>
   </nav>
   <input id="file-pick" type="file" multiple hidden>
+</section>
+
+<!-- 사무실 화면(3D 사무실 모드) — 켜진 프로젝트 = 캐릭터. 그림은 캔버스 하나에(office-view.js), 움직임은 office-life.js -->
+<section id="office-view" hidden>
+  <div id="office-stage">
+    <p id="office-bar"></p>
+    <canvas id="office-canvas" aria-label="사무실 — 캐릭터를 누르면 그 프로젝트 터미널로 갑니다"></canvas>
+  </div>
+  <!-- 오른쪽 — 누가 무엇을 하는지 + 살아 움직이는 활동 로그 -->
+  <aside id="office-side" aria-label="사무실 활동">
+    <h3>사무실 사람들 <small id="office-count"></small></h3>
+    <ul id="office-people"></ul>
+    <h3>활동 로그 <small class="o-live">● LIVE</small></h3>
+    <ol id="office-log"></ol>
+  </aside>
 </section>
 
 <!-- 결재 인박스 — 설정과 같은 오른쪽 팝업 패널(터미널 전체를 가리지 않는다).
@@ -228,5 +247,11 @@ try { var frogUi = JSON.parse(localStorage.getItem("frog.prefs") || "{}").ui;
 <script src="browser.js"></script>  <!-- split.js·files.js 다음 — 분할 상수·fpGo·fpClose 를 쓴다 -->
 <script src="remote.js"></script>   <!-- browser.js 다음 — 브라우저 모드(원격 크롬 뷰어) -->
 <script src="grid.js"></script>     <!-- 맨 끝 — 파일·브라우저 패널 함수(fpClose·bpClose)를 쓴다 -->
+<script src="pad.js"></script>      <!-- grid.js 다음 — setActive·isGrid 로 게임패드 칸 이동 -->
+<!-- 3D 사무실 모드 — 지도·칸 규격 → 하루(움직임) → 그리기 순. 그리기는 app.js 의 openTerminal·showView·panes 를 쓴다 -->
+<script src="office-world.js"></script>
+<script src="office-atlas.js"></script>
+<script src="office-life.js"></script>
+<script src="office-view.js"></script>
 </body>
 </html>

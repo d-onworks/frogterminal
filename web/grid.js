@@ -191,8 +191,9 @@ function pickChanged(pane) {
   // 꺼진 것은 사이드바와 같은 잣대로 되묻는다 — 고르기만 해도 tmux 세션과 에이전트가 새로 선다.
   const done = () => pane.ask.replaceChildren();
   pane.ask.append(el("span", "꺼져 있습니다 —"),
-    actBtn("클로드로 켜기", "", () => { done(); openIn(pane, s, "claude"); }),
-    actBtn("코덱스로 켜기", "", () => { done(); openIn(pane, s, "codex"); }, "codex --yolo 로 시작"),
+    actBtn("클로드로 켜기", "agent-claude", () => { done(); openIn(pane, s, "claude"); }),
+    actBtn("코덱스로 켜기", "agent-codex", () => { done(); openIn(pane, s, "codex"); }, "codex --yolo 로 시작"),
+    actBtn("안티로 켜기", "agent-anti", () => { done(); openIn(pane, s, "anti"); }, "Antigravity CLI(agy) 로 시작"),
     actBtn("취소", "cancel", () => { done(); renderPicks(true); }));
 }
 
@@ -212,7 +213,9 @@ function renderPicks(force = false) {
     for (const s of list) {
       const other = usedBy.get(s.name);
       const busy = !!other && other !== pane;
-      opts.push([s.name, s.name + (s.alive ? "" : " · 꺼짐") + (busy ? " · 다른 칸" : ""), busy]);
+      // ssh 로 다른 PC 에 붙은 세션은 [host] 를 앞에 — 칸 머리줄에서도 어느 기계인지 읽힌다
+      opts.push([s.name, (s.host ? `[${s.host}] ` : "") + s.name + (s.alive ? "" : " · 꺼짐")
+                 + (busy ? " · 다른 칸" : ""), busy]);
     }
     const sig = JSON.stringify([cur, opts]);
     if (sig === pane.pickSig && !force) continue;

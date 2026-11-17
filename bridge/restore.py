@@ -30,30 +30,38 @@ def killable() -> list[str]:
             if name != config.MONITOR_SESSION and sessions.is_valid_session(name)]
 
 
-def load_snapshot() -> dict:
-    """{"sessions": [이름…], "at": "ISO"} — 없거나 깨졌으면 빈 명단(복원 버튼이 꺼진다)."""
-    try:
-        data = json.loads(snapshot_file().read_text())
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-        return {"sessions": [], "at": ""}
-    if not isinstance(data, dict):
-        return {"sessions": [], "at": ""}
-    names = data.get("sessions")
-    if not isinstance(names, list):
-        return {"sessions": [], "at": ""}
-    at = data.get("at")
+def parse_snapshot(data: object) -> dict:
+    """{"sessions": [이름…], "agents": {이름: 에이전트}, "at": "ISO"} — 깨졌으면 빈 명단.
+
+    agents 는 코덱스·안티로 돌던 세션만 적힌다(sessions.session_agents) — 없는 이름은 설정의 기본
+    에이전트로 되살린다. 손으로 고친 파일도 들어올 수 있으므로 검증은 여기 한곳에서.
+    """
+    if not isinstance(data, dict) or not isinstance(data.get("sessions"), list):
+        return {"sessions": [], "agents": {}, "at": ""}
+    at, agents = data.get("at"), data.get("agents")
+    agents = agents if isinstance(agents, dict) else {}
     # 이름 검증은 여기서 한 번 더 — 손으로 고친 파일이 복원 때 tmux 인자로 그대로 흘러가지 않게.
-    return {"sessions": [n for n in names if isinstance(n, str) and sessions.is_valid_name(n)],
+    names = [n for n in data["sessions"] if isinstance(n, str) and sessions.is_valid_name(n)]
+    return {"sessions": names,
+            "agents": {n: a for n, a in agents.items() if n in names and a in settings.AGENTS},
             "at": at if isinstance(at, str) else ""}
 
 
-def save_snapshot(names: list[str]) -> None:
+def load_snapshot() -> dict:
+    """끄기 직전 명단 — 없거나 깨졌으면 빈 명단(복원 버튼이 꺼진다)."""
+    try:
+        return parse_snapshot(json.loads(snapshot_file().read_text()))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return parse_snapshot(None)
+
+
+def save_snapshot(names: list[str], agents: dict[str, str] | None = None) -> None:
     """원자적으로 남긴다 — 반쪽 JSON 을 읽고 '복원할 게 없다'고 답하는 일이 없게."""
     path = snapshot_file()
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps({"sessions": names, "at": datetime.now(config.KST).isoformat()},
-                              ensure_ascii=False))
+    tmp.write_text(json.dumps({"sessions": names, "agents": agents or {},
+                               "at": datetime.now(config.KST).isoformat()}, ensure_ascii=False))
     tmp.replace(path)
 
 
@@ -63,8 +71,9 @@ def kill_all() -> dict:
     명단을 **먼저** 남긴다 — 중간에 무엇이 터져도 복원의 재료는 이미 디스크에 있다.
     """
     names = killable()
-    if names:
-        save_snapshot(names)                     # 빈 명단으로 덮어써서 복원거리를 지우지 않는다
+    if names:                                    # 빈 명단으로 덮어써서 복원거리를 지우지 않는다
+        agents = sessions.session_agents()       # 코덱스로 돌던 칸이 클로드로 되살아나지 않게
+        save_snapshot(names, {n: agents[n] for n in names if n in agents})
     killed, failed = [], []
     for name in names:
         try:
@@ -88,7 +97,7 @@ def restore_all() -> dict:
     """
     snap = load_snapshot()
     alive = set(sessions.list_tmux_sessions())
-    agent = settings.load()["agent"]
+    default = settings.load()["agent"]
     restored, already, failed = [], [], []
     for name in snap["sessions"]:
         if name in alive:
@@ -97,7 +106,7 @@ def restore_all() -> dict:
         if not sessions.is_valid_session(name):  # 폴더가 사라진 이름 — 되살릴 자리가 없다
             failed.append(name)
             continue
-        cmd = sessions.attach_cmd(name, agent=agent)
+        cmd = sessions.attach_cmd(name, agent=snap["agents"].get(name, default))
         # ["tmux", "new-session", …] 사이에 -d 를 끼운다: -A 는 있으면 붙고 없으면 만드는데,
         # -d 가 '붙지는 마라'를 더한다. 브릿지는 지금 이 세션에 붙을 화면이 없다.
         try:

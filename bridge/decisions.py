@@ -77,7 +77,7 @@ def _load_cards() -> list[dict]:
 
 def capture_pane(name: str) -> str:                  # Task 4 에서 사용 — 여기 두는 이유: monkeypatch 지점
     try:
-        out = subprocess.run(["tmux", "capture-pane", "-p", "-t", name],
+        out = subprocess.run(["tmux", "capture-pane", "-p", "-t", sessions.tmux_target(name)],
                              capture_output=True, text=True, timeout=5)
         return out.stdout if out.returncode == 0 else ""
     except (OSError, subprocess.SubprocessError):
@@ -360,6 +360,10 @@ def overview() -> dict:
         # 화면이 이 둘을 구분해야 버튼을 눌러 보고서야 "안 된다"는 말을 듣는 일이 없다.
         c["canAnswer"] = c["live"] and c.get("project") in live
     states: dict[str, dict] = {}
+    # 3D 모션 모드(office.py)가 서브에이전트를 세는 데 쓰는 '살아 있는 클로드 대화 파일'. 상태와 같은
+    # 잣대(살아 있음 + tmux 있음)로 고른다. states 에 섞지 않는 이유: 사이드바·테스트가 states 를
+    # {"status","pending"} 그대로 비교한다.
+    transcripts: dict[str, list[str]] = {}
     # 상태는 '열 수 있는 터미널'이 있을 때만 — tmux 세션(탭 포함)이 없으면 만들지 않는다.
     # 프로세스 생존(live)만으로 상태를 만들면, tmux 세션을 끈 뒤에도 그 안에서 떠난 헤드리스
     # claude -p(자동화)가 살아 있는 동안 사이드바가 '진행중…'을 달고 점은 꺼짐인 채 어긋난다
@@ -379,7 +383,10 @@ def overview() -> dict:
             st["status"] = status
         if kind in DECISION_KINDS:
             st["pending"] += 1
-    return {"cards": open_cards, "states": states}
+        path = transcript_path(c)                     # ~/.claude/projects 밖(코덱스 등)은 None
+        if path is not None:
+            transcripts.setdefault(project, []).append(str(path))
+    return {"cards": open_cards, "states": states, "transcripts": transcripts}
 
 
 class NoPicker(Exception):
@@ -433,7 +440,7 @@ def send_answer(project: str, type_: str, value: str) -> None:
         raise ValueError(type_)
     try:
         for keys in keystrokes:
-            _tmux("send-keys", "-t", project, *keys)
+            _tmux("send-keys", "-t", sessions.tmux_target(project), *keys)
     except (OSError, subprocess.SubprocessError) as e:
         # 살아있음 검사와 send-keys 사이에 세션이 죽는 창(TOCTOU)이 실재한다. 그대로 두면
         # 핸들러가 못 잡아 500 — 답이 안 들어갔다는 뜻이므로 LookupError(=404 세션 없음)로 맞춘다.

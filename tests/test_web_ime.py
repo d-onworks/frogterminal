@@ -667,6 +667,40 @@ def test_드래그가_끝나면_tmux_복사물이_이_기기_클립보드로(ter
     assert page.is_visible("#copy-toast")                # '복사됨' 알림
 
 
+def test_새로_복사한_게_없으면_터미널을_눌러도_클립보드를_안_덮는다(term):
+    """신고(2026-10-24): 휠클릭 캡처 직후 ⌘V 가 한 번에 안 들어갔다. 실기 기록 — ⌘V 1초 전에
+    크롬이 클립보드에 '어제 복사한 글자'를 다시 써 넣고 있었다(Maccy 기록). 캡처 뒤 터미널을 누르다 손이
+    조금(4픽셀 넘게) 움직이면 드래그로 보고, tmux 가 새로 복사한 게 없는데도 남아 있던 옛 버퍼를 써 넣어
+    방금 찍은 그림을 덮었다. 버퍼가 이번 누름보다 먼저 있던 것이면 건드리지 않고, Ctrl+C 도 중단신호로 둔다."""
+    page, _, bridge = term
+    grant_clipboard(page, bridge)
+    bridge.copy_buffer, bridge.copy_age = "어제 복사한 글자", 86400.0
+    page.evaluate("""(async () => { const c = document.createElement('canvas'); c.width = c.height = 2;
+        const blob = await new Promise(r => c.toBlob(r, 'image/png'));
+        await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]); })()""")
+    box = page.locator("#terminal").bounding_box()
+    x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+    page.mouse.move(x, y)
+    page.mouse.down()
+    page.mouse.move(x + 6, y, steps=2)                   # 누르다 손이 6픽셀 움직였다
+    page.mouse.up()
+    settle(page, 900)
+    types = page.evaluate("(async () => (await navigator.clipboard.read()).flatMap(i => i.types))()")
+    assert "image/png" in types                          # 캡처한 그림이 그대로
+    assert not page.is_visible("#copy-toast")
+    bridge.received.clear()
+    page.keyboard.press("Control+c")
+    settle(page, 400)
+    assert bytes(bridge.received) == b"\x03"             # 복사가 아니었으니 Ctrl+C 는 중단신호
+    bridge.copy_age = 0.3                                # 이번 드래그로 막 만든 버퍼는 그대로 복사한다
+    page.mouse.move(x, y)
+    page.mouse.down()
+    page.mouse.move(x + 200, y, steps=5)
+    page.mouse.up()
+    settle(page, 900)
+    assert page.evaluate("navigator.clipboard.readText()") == "어제 복사한 글자"
+
+
 def test_드래그_직후_Ctrl_C_는_복사이고_평소엔_중단신호(term):
     """★사고의 핵심: tmux 선택은 브라우저에 '선택 없음'으로 보여, Ctrl+C 가 복사 대신
     SIGINT 로 나가 클로드를 끊어 먹었다. 방금 드래그했으면 복사, 아니면 원래대로 중단."""

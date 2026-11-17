@@ -8,6 +8,7 @@ import os
 import re
 import shlex
 import subprocess
+import time
 from pathlib import Path
 
 from bridge import config, settings
@@ -97,6 +98,17 @@ def is_project_folder(name: str, root: Path | None = None) -> bool:
                for marker in ("CLAUDE.md", "AGENTS.md"))
 
 
+def tmux_target(name: str) -> str:
+    """tmux -t 에 넘길 '정확히 이 세션' 표기 — `=이름:`.
+
+    맨 이름을 -t 에 주면 tmux 는 점(.)을 '세션.칸' 구분자로 읽는다. 'Dr.thesis' 폴더가
+    'Dr 세션의 thesis 칸'이 되어 다시 붙을 때마다 `can't find pane: thesis` 로 실패했고,
+    'Dr' 세션이 따로 있으면 그 세션의 옵션을 바꾸고 끄기까지 할 수 있었다(2026-11-17 다른 사용자 신고·실측).
+    '=' = 이름 정확히 일치(앞부분 일치 금지), 끝 ':' = 여기까지가 세션 이름.
+    """
+    return f"={name}:"
+
+
 def list_tmux_sessions() -> list[str]:
     try:
         out = subprocess.run(
@@ -110,12 +122,17 @@ def list_tmux_sessions() -> list[str]:
     return [l for l in out.stdout.splitlines() if l]
 
 
+# pane 현재 명령 → 에이전트 키(settings.AGENTS 의 키). 클로드는 여기 없다(아래 docstring).
+_PANE_AGENTS = {"codex": "codex", "agy": "anti"}
+
+
 def session_agents() -> dict[str, str]:
-    """세션 이름 → 그 안에서 지금 도는 에이전트("codex"). 사이드바 점 색의 근거(코덱스 = 파랑).
+    """세션 이름 → 그 안에서 지금 도는 에이전트("codex"·"anti"). 사이드바 점 색의 근거.
 
     tmux 가 보는 pane 의 현재 명령(#{pane_current_command})만 읽는다 — 코덱스는 단일 바이너리라
-    "codex" 로 보이고, 클로드는 버전 이름("2.1.261")·node 로 보여 특정할 수 없다. 그래서 코덱스만
-    표시하고 나머지는 없는 것으로 둔다(클로드가 기본 그림이라 별도 표시가 필요 없다). 탭(base@N)은
+    "codex", Antigravity CLI 는 "agy" 로 보이고, 클로드는 버전 이름("2.1.261")·node 로 보여 특정할
+    수 없다. 그래서 그 둘만 표시하고 나머지는 없는 것으로 둔다(클로드가 기본 그림이라 별도 표시가
+    필요 없다 — 코덱스 = 파랑, 안티 = 보라, 요청 2026-09-05·10-18). 탭(base@N)은
     자기 줄이 없으므로 기본 세션의 pane 만 본다. 실패하면 빈 dict(=색 없음) — 목록 자체는 안 막는다.
     """
     try:
@@ -130,9 +147,135 @@ def session_agents() -> dict[str, str]:
     agents = {}
     for line in out.stdout.splitlines():
         name, _, cmd = line.partition("\t")
-        if name and cmd.strip() == "codex":
-            agents[name] = "codex"
+        if name and (agent := _PANE_AGENTS.get(cmd.strip())):
+            agents[name] = agent
     return agents
+
+
+# ssh 에서 값을 하나 더 먹는 옵션들(`man ssh` 의 SYNOPSIS). 이 뒤 토큰은 호스트가 아니다.
+_SSH_OPTS_WITH_ARG = set("bcDEeFIiJLlmOopQRSWwBP")
+
+
+def ssh_target(argv: list[str]) -> str | None:
+    """ssh 명령줄(argv)에서 붙으려는 호스트만 뽑는다. ssh 가 아니거나 못 찾으면 None.
+
+    `ssh -t srvpc` → "srvpc", `ssh -p 2222 admin@host` → "host", `ssh ssh://u@h:22` → "h".
+    ~/.ssh/config 의 Host 별칭(srvpc·winpc2·winpc)은 별칭 그대로 — 사용자가 부르는 이름이
+    곧 배지다. 호스트 뒤의 토큰(원격 명령)은 보지 않는다.
+    """
+    if not argv or Path(argv[0]).name != "ssh":
+        return None
+    it = iter(argv[1:])
+    for tok in it:
+        if tok == "--":
+            tok = next(it, None)
+            break
+        if tok.startswith("-"):
+            # "-p2222" 처럼 값이 붙은 꼴과 "-p 2222" 처럼 떨어진 꼴 둘 다. "-tt" 같은 묶음 불리언은 통과.
+            flag = tok[1:2]
+            if flag in _SSH_OPTS_WITH_ARG and len(tok) == 2:
+                next(it, None)
+            continue
+        break
+    else:
+        return None
+    if tok is None:
+        return None
+    if tok.startswith("ssh://"):
+        tok = tok[len("ssh://"):].split("/", 1)[0]
+        tok = tok.rpartition("@")[2]
+        if tok.startswith("["):                          # [IPv6]:port
+            tok = tok[1:].split("]", 1)[0]
+        else:
+            tok = tok.split(":", 1)[0]
+        return tok or None
+    return tok.rpartition("@")[2] or None
+
+
+# 원격 명령 안의 cd — `cd /d C:\rproj && cmd`(윈도우) · `cd /srv/app; bash`(리눅스). 따옴표 묶음도 한 토큰.
+_REMOTE_CD_RE = re.compile(r"""(?:^|[\s;&|])cd\s+(?:/d\s+)?("[^"]+"|'[^']+'|[^\s;&|]+)""", re.I)
+
+
+def ssh_remote_cwd(argv: list[str]) -> str | None:
+    """ssh 명령줄의 원격 명령(호스트 뒤 토큰들)에서 `cd` 로 들어가는 폴더를 뽑는다. 없으면 None."""
+    host = ssh_target(argv)
+    if not host:
+        return None
+    rest = " ".join(argv[argv.index(next(t for t in argv[1:] if t.rpartition("@")[2].endswith(host))) + 1:])
+    m = _REMOTE_CD_RE.search(rest)
+    return m.group(1).strip("\"'") if m else None
+
+
+def _ssh_children(pane_pids: set[int]) -> dict[int, str]:
+    """pane 의 셸(pane_pid) 바로 아래에서 도는 ssh 의 pane_pid → 호스트. ps 한 번으로 전부."""
+    try:
+        out = subprocess.run(["ps", "-eo", "ppid=,pid=,args="],
+                             capture_output=True, text=True, timeout=5,
+                             env={**os.environ, "LC_ALL": "C"})
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    if out.returncode != 0:
+        return {}
+    found = {}
+    for line in out.stdout.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) < 3:
+            continue
+        try:
+            ppid = int(parts[0])
+        except ValueError:
+            continue
+        if ppid in pane_pids and ppid not in found:
+            host = ssh_target(parts[2].split())
+            if host:
+                found[ppid] = host
+    return found
+
+
+def session_remotes() -> dict[str, dict]:
+    """세션 이름 → {"host": 붙어 있는 다른 기계, "path": 그 기계의 작업 폴더}. 사이드바 [host] 배지와
+    경로 줄의 근거(요청 2026-10-13: "서버 PC 의 C:\\work 프로젝트"처럼 폴더까지 매칭돼야 한다).
+
+    pane 의 현재 명령이 ssh 인 것만 본다. 호스트는 ①pane 시작 명령(`tmux new -s rproj "ssh -t srvpc"`)
+    에서, 그게 셸이면 ②셸 바로 아래 ssh 자식의 인자에서(손으로 `ssh winpc` 을 친 경우) 읽는다.
+    원격 폴더는 ①tmux 세션 옵션 `@remote_path`(만드는 쪽이 `tmux set-option -t <세션> @remote_path 'C:\\rproj'`
+    로 적어 둔다 — 세션이 사는 동안 유지) ②없으면 ssh 원격 명령의 `cd …` 에서 읽는다. 둘 다 없으면 None.
+    맥 로컬 세션은 여기 안 실려 지금과 똑같이 보인다. 실패하면 빈 dict(목록 자체는 안 막는다).
+    """
+    try:
+        out = subprocess.run(
+            ["tmux", "list-panes", "-a", "-F",
+             "#{session_name}\t#{pane_current_command}\t#{pane_pid}\t#{@remote_path}\t#{pane_start_command}"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    if out.returncode != 0:
+        return {}
+    remotes: dict[str, dict] = {}
+    need_ps: dict[int, str] = {}                        # pane_pid → 세션 (시작 명령으로 못 푼 ssh pane)
+    for line in out.stdout.splitlines():
+        parts = line.split("\t", 4)
+        if len(parts) < 5 or parts[1].strip() != "ssh" or parts[0] in remotes:
+            continue
+        name, _, pid, opt_path, start = parts
+        # tmux 는 시작 명령을 통째로 따옴표에 싸서 준다("ssh -t srvpc") — 한 번 벗기고 다시 쪼갠다.
+        try:
+            argv = shlex.split(start)
+            if len(argv) == 1 and " " in argv[0]:
+                argv = shlex.split(argv[0])
+        except ValueError:
+            argv = []
+        host = ssh_target(argv)
+        if host:
+            remotes[name] = {"host": host, "path": opt_path.strip() or ssh_remote_cwd(argv)}
+        elif pid.isdigit():
+            need_ps.setdefault(int(pid), (name, opt_path.strip() or None))
+    if need_ps:
+        for pid, host in _ssh_children({p for p in need_ps}).items():
+            name, opt_path = need_ps[pid]
+            remotes.setdefault(name, {"host": host, "path": opt_path})
+    return remotes
 
 
 def process_starts() -> dict[int, str] | None:
@@ -174,6 +317,7 @@ def merged_sessions(root: Path | None = None) -> list[dict]:
     # 탭(base@N)은 여기 들어올 수 없다: 파일을 읽을 때 is_valid_name 이 '@' 를 걸러낸다.
     fav_rank = {n: i for i, n in enumerate(load_favorites())}
     agents = session_agents() if alive else {}
+    remotes = session_remotes() if alive else {}     # ssh 로 다른 PC 에 붙은 세션 → [host] 배지 + 원격 폴더
     folders = set(list_project_folders(root))
     # 탭 세션(base@N)은 사이드바 줄이 아니라 그 프로젝트 항목의 tabs 로 접는다.
     # 프로젝트 폴더가 사라진 고아 탭은 접을 곳이 없으니 그냥 줄로 남긴다(보이고 끌 수 있게).
@@ -187,7 +331,8 @@ def merged_sessions(root: Path | None = None) -> list[dict]:
     items = [
         {
             "name": n,
-            "path": str(root / n) if n in folders else None,
+            # 로컬 프로젝트 폴더, 없으면 ssh 세션의 원격 폴더(C:\\rproj 같은 것 — 표시용, 맥에서 열리지 않는다)
+            "path": str(root / n) if n in folders else remotes.get(n, {}).get("path"),
             # 기본 세션이 꺼져 있어도 탭이 살아 있으면 이 프로젝트는 켜진 것이다
             "alive": n in alive or bool(tabs.get(n)),
             # 숨김은 '표시'일 뿐 — 목록에서 빼지 않는다. 웹이 접어 두고 "숨긴 항목 N개 보기"로
@@ -195,13 +340,18 @@ def merged_sessions(root: Path | None = None) -> list[dict]:
             "hidden": n in hidden,
             # 폴더가 없는 살아있는 tmux 세션은 기존 규칙대로 보이고 끌 수 있어야 한다. 따라서
             # marker 판별은 실제 폴더 항목에만 적용하고, 고아 세션은 project=True로 둔다.
-            "project": is_project_folder(n, root) if n in folders else True,
+            # 세션이 켜져 있으면 폴더 내용과 무관하게 프로젝트다 — 파인더에서 만든 빈 폴더(.md 하나)에
+            # 코덱스를 띄웠더니 '프로젝트 아님'으로 숨긴 칸에 접혀 사이드바에서 사라졌다.
+            "project": (n in alive or bool(tabs.get(n)) or is_project_folder(n, root)) if n in folders else True,
             # 즐겨찾기 순번(0부터) — 즐겨찾기가 아니면 None(JSON null). 숨김과 마찬가지로 '표시'일
             # 뿐이라 목록을 바꾸지 않는다: 맨 위로 올리는 것은 화면의 몫이다.
             "fav": fav_rank.get(n),
             "tabs": sorted(tabs.get(n, [])),
-            # 지금 코덱스가 도는 세션이면 "codex" — 웹이 점을 파랑으로 칠한다.
+            # 지금 코덱스가 도는 세션이면 "codex"(파란 점)·Antigravity 면 "anti"(보라 점) — 웹이 칠한다.
             "agent": agents.get(n),
+            # ssh 로 다른 기계에 붙어 있으면 그 호스트(별칭 그대로) — 웹이 이름 앞에 [host] 배지를 단다.
+            # 맥 로컬 세션은 None(JSON null)이라 지금 모양 그대로다.
+            "host": remotes.get(n, {}).get("host"),
         }
         for n in names
     ]
@@ -242,7 +392,7 @@ def set_compact(name: str, on: bool) -> None:
     좁은 칸마다 계정 사용량 4줄이 반복되던 것을 웹 하단 한 세트로 모은다. 세션 옵션(-g 아님)이라
     다른 세션·프로그터미널 밖 터미널은 영향이 없다. 실패는 조용히 삼킨다(HUD 가 길게 남을 뿐이다).
     """
-    args = ["tmux", "set-option", "-q", "-t", name]
+    args = ["tmux", "set-option", "-q", "-t", tmux_target(name)]
     args += [COMPACT_OPT, "1"] if on else ["-u", COMPACT_OPT]
     try:
         subprocess.run(args, capture_output=True, timeout=5)
@@ -265,15 +415,15 @@ def leave_copy_mode(name: str) -> None:
     앱으로 새지 않는다(Esc 는 클로드의 작업 중단 키라 함부로 못 보낸다). 실패는 조용히 삼킨다.
     """
     try:
-        subprocess.run(["tmux", "if-shell", "-F", "-t", name, "#{pane_in_mode}",
-                        f"send-keys -t {shlex.quote(name)} -X cancel"],
+        subprocess.run(["tmux", "if-shell", "-F", "-t", tmux_target(name), "#{pane_in_mode}",
+                        f"send-keys -t {shlex.quote(tmux_target(name))} -X cancel"],
                        capture_output=True, timeout=5)
     except (OSError, subprocess.SubprocessError):
         pass
 
 
 def _kill_tmux(name: str) -> None:                   # 여기 두는 이유: 테스트 monkeypatch 지점
-    subprocess.run(["tmux", "kill-session", "-t", name],
+    subprocess.run(["tmux", "kill-session", "-t", tmux_target(name)],
                    capture_output=True, timeout=5, check=True)
 
 
@@ -300,21 +450,29 @@ def kill_session(name: str) -> bool:
 MAX_COPY_BYTES = 100 * 1024                  # 화면 한가득 드래그해도 이 안이다(폭주 방어)
 
 
-def copy_buffer() -> str:
-    """tmux 의 최신 복사 버퍼(드래그로 방금 고른 글자). 없으면 빈 문자열.
+def copy_buffer() -> tuple[str, float | None]:
+    """tmux 의 최신 복사 버퍼(드래그로 방금 고른 글자)와 그 버퍼가 만들어진 지 몇 초. 없으면 ("", None).
 
     왜 필요한가: tmux 가 mouse on 이라 드래그는 브라우저 선택이 아니라 tmux 선택이 되고,
     이 맥의 ~/.tmux.conf 는 그 결과를 pbcopy(맥 클립보드)로 보낸다. 폰에서 드래그하면
     복사물이 폰이 아니라 맥으로 가 버려 붙여넣기가 영영 안 됐다(2026-08-15 실사고).
     그래서 브라우저가 이 버퍼를 읽어 자기 클립보드에도 넣는다.
+
+    나이(초)를 같이 주는 이유: 터미널을 누르다 손이 조금 움직이면 웹은 드래그로
+    보는데, tmux 는 새로 복사한 게 없어 '어제 버퍼'가 그대로 왔다 — 그걸 써 넣어 방금 캡처한 그림을 덮었다.
+    웹은 이 나이가 '누른 뒤 흐른 시간'보다 크면 쓰지 않는다. 브릿지 시계로 잰 나이라 폰 시계와 무관하다.
     """
     try:
         out = subprocess.run(["tmux", "show-buffer"], capture_output=True, text=True, timeout=5)
+        made = subprocess.run(["tmux", "list-buffers", "-F", "#{buffer_created}"],
+                              capture_output=True, text=True, timeout=5)
     except (OSError, subprocess.SubprocessError):
-        return ""
+        return "", None
     if out.returncode != 0:                  # 버퍼가 하나도 없을 때 — 에러가 아니라 '빈 것'
-        return ""
-    return out.stdout[:MAX_COPY_BYTES]
+        return "", None
+    first = made.stdout.split("\n", 1)[0].strip()   # 최신 버퍼가 맨 위 — show-buffer 가 보여 준 그것
+    age = max(0.0, time.time() - int(first)) if made.returncode == 0 and first.isdigit() else None
+    return out.stdout[:MAX_COPY_BYTES], age
 
 
 def load_hidden() -> set[str]:
@@ -422,12 +580,17 @@ def mark_created(name: str) -> list[str]:
 # 그래서 ①복사 뒤 scroll_position 이 0(맨 아래)이면 취소, 아니면 남는다 ②복사 모드에서 휠을 내려 맨 아래에
 # 닿으면(선택 중이 아닐 때) 빠져나온다. 키 테이블은 tmux 에 세션 단위가 없어 전역 바인딩이다
 # (이 맥의 tmux 는 사실상 프로그터미널 전용). 명령 안의 `\;` 는 바인딩 내부 구분자(argv 로는 백슬래시+세미콜론).
+#
+# 빈 선택은 클립보드에 넣지 않는다 — 터미널을 누를 때 손이 조금만 움직여도 드래그 끝으로 잡혀 빈칸(0바이트·
+# 공백뿐)을 pbcopy 로 넘겼고, 그게 방금 휠클릭으로 찍은 캡처를 덮어 "⌘V 가 한 번에 안 들어간다"가 됐다
+# (2026-11-08 실측: 하룻밤 빈 글자 쓰기 51번, 매번 앞창 = 프로그터미널. Maccy 는 빈 글자를 안 적어 멀쩡해 보였다).
+_PBCOPY_NONEMPTY = "perl -0777 -ne 'exit unless /\\S/; open(my $p, \"|-\", \"pbcopy\") or exit 1; print $p $_'"
 _AT_BOTTOM = "#{==:#{scroll_position},0}"
 _AT_BOTTOM_NO_SEL = "#{&&:#{==:#{scroll_position},0},#{==:#{selection_present},0}}"
 _COPY_BINDS = []
 for _table in ("copy-mode", "copy-mode-vi"):
     _COPY_BINDS += [";", "bind-key", "-T", _table, "MouseDragEnd1Pane",
-                    "send-keys", "-X", "copy-pipe", "pbcopy", "\\;",
+                    "send-keys", "-X", "copy-pipe", _PBCOPY_NONEMPTY, "\\;",
                     "if-shell", "-F", _AT_BOTTOM, "send-keys -X cancel"]
     _COPY_BINDS += [";", "bind-key", "-T", _table, "WheelDownPane",
                     "select-pane", "\\;", "send-keys", "-X", "-N", "5", "scroll-down", "\\;",
@@ -436,13 +599,19 @@ for _table in ("copy-mode", "copy-mode-vi"):
 
 def _session_opts(name: str) -> list[str]:
     """attach 때마다 그 세션에만 못박는 tmux 옵션 — 사유는 attach_cmd 본문 주석 참조."""
-    return [";", "set-option", "-t", name, "mouse", "on",
-            ";", "set-option", "-t", name, "status", "off",
-            ";", "set-option", "-w", "-t", name, "pane-border-status", "off"] + _COPY_BINDS
+    t = tmux_target(name)
+    return [";", "set-option", "-t", t, "mouse", "on",
+            ";", "set-option", "-t", t, "status", "off",
+            ";", "set-option", "-w", "-t", t, "pane-border-status", "off"] + _COPY_BINDS
 
 
 def attach_cmd(name: str, root: Path | None = None, agent: str = "shell") -> list[str]:
     root = root if root is not None else config.projects_root()
+    # 점(.) 든 이름은 new-session -A 가 이미 있는 세션을 못 찾는다 — -s 를 -t 처럼 '세션.칸'으로
+    # 읽어 `can't find pane` 으로 끝난다(tmux 3.7c 실측). 있으면 정확한 표기로 붙기만 한다.
+    # 없으면 아래 new-session 이 그대로 잘 만든다(-s 의 새 이름은 점을 그대로 받는다).
+    if "." in name and name in list_tmux_sessions():
+        return ["tmux", "attach-session", "-t", tmux_target(name)] + _session_opts(name)
     cmd = ["tmux", "new-session", "-A", "-s", name]
     if name == MONITOR_SESSION:
         # CPU 팝업 — 설정 에이전트 대신 htop 을 곧바로. zsh -lc(로그인 셸 PATH)라 brew htop 이
@@ -452,7 +621,7 @@ def attach_cmd(name: str, root: Path | None = None, agent: str = "shell") -> lis
     work = project_dir(root, base)
     if work:
         cmd += ["-c", str(work)]
-    # 새로 만드는 세션이면 설정한 에이전트(claude·codex)를 곧바로 띄운다 — 셸에 이름을 치는
+    # 새로 만드는 세션이면 설정한 에이전트(claude·codex·anti)를 곧바로 띄운다 — 셸에 이름을 치는
     # 한 단계를 없앤다(Orca 차용). 이미 있는 세션에는 -A 가 명령을 무시하고 붙기만 한다(실측).
     # zsh -lic: 브릿지(launchd)의 앙상한 PATH 대신 로그인 셸 PATH 를 타고, -i 로 .zshrc 의
     # alias(cl 같은 약칭)까지 살린다. shlex.quote — 플래그 붙은 명령이 통째로 -c 한 인자가 되게.

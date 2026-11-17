@@ -177,7 +177,7 @@ async def test_settings_왕복과_검증(aiohttp_client, monkeypatch, tmp_path):
     client = await aiohttp_client(server.create_app())
     res = await client.get("/api/settings", headers=GOOD)
     got = await res.json()
-    assert got["agents"] == ["claude", "codex", "shell"]
+    assert got["agents"] == ["claude", "codex", "anti", "shell"]
     assert got["settings"] == {"projectsRoot": str(config.DEFAULT_PROJECTS_ROOT),
                                "agent": "claude", "bypass": True, "rc": False, "cont": True,
                                "commands": {"claude": "", "codex": ""}}   # bypass·이어서 시작 기본 켬
@@ -1372,10 +1372,10 @@ async def test_locate_는_유일할_때만_경로를_준다(aiohttp_client, monk
 
 async def test_clipboard_는_tmux_버퍼를_준다(aiohttp_client, monkeypatch):
     from bridge import sessions
-    monkeypatch.setattr(sessions, "copy_buffer", lambda: "긁은 글자")
+    monkeypatch.setattr(sessions, "copy_buffer", lambda: ("긁은 글자", 2.5))
     client = await aiohttp_client(server.create_app())
     res = await client.get("/api/clipboard", headers=GOOD)
-    assert res.status == 200 and (await res.json()) == {"text": "긁은 글자"}
+    assert res.status == 200 and (await res.json()) == {"text": "긁은 글자", "age": 2.5}
     assert (await client.get("/api/clipboard")).status == 403      # 인증은 그대로 필수
 
 
@@ -1517,3 +1517,51 @@ async def test_hud_스크립트가_없으면_빈_목록(aiohttp_client, tmp_path
     monkeypatch.setitem(server._hud_cache, "at", 0.0)
     client = await aiohttp_client(server.create_app())
     assert (await (await client.get("/api/hud", headers=GOOD)).json()) == {"lines": []}
+
+
+# ---------- 다른 PC 터미널의 파일 패널 — ssh 원격 폴더 읽기 전용 ----------
+
+async def test_원격_세션의_파일_목록과_읽기는_원격모듈로_가고_쓰기는_405(aiohttp_client, monkeypatch):
+    from bridge import remote_files
+    rm = {"host": "srvpc", "path": "C:\\rproj"}
+    monkeypatch.setattr(remote_files, "remote_of", lambda p: rm if p == "rproj" else None)
+    monkeypatch.setattr(remote_files, "list_dir", lambda r, rel: [{"name": "README.md", "dir": False, "size": 3}])
+    monkeypatch.setattr(remote_files, "read_text",
+                        lambda r, rel: {"content": "rproj\n", "mtimeNs": "1", "size": 4})
+    client = await aiohttp_client(server.create_app())
+    res = await client.get("/api/files?project=rproj", headers=GOOD)
+    assert res.status == 200 and (await res.json())["entries"][0]["name"] == "README.md"
+    res = await client.get("/api/file?project=rproj&path=README.md", headers=GOOD)
+    assert res.status == 200 and (await res.json())["content"] == "rproj\n"
+    res = await client.put("/api/file", headers=GOOD, json={
+        "project": "rproj", "path": "README.md", "content": "x", "baseMtimeNs": "1"})
+    assert res.status == 405                                                 # 읽기 전용
+    res = await client.post("/api/mkdir", headers=GOOD, json={"project": "rproj", "path": "new"})
+    assert res.status == 405
+
+
+async def test_원격_PC_가_안_붙으면_502_이고_로컬_404_와_구분된다(aiohttp_client, monkeypatch):
+    from bridge import remote_files
+    monkeypatch.setattr(remote_files, "remote_of", lambda p: {"host": "srvpc", "path": "C:\\rproj"})
+    def down(r, rel=""):
+        raise remote_files.RemoteUnavailable("srvpc")
+    monkeypatch.setattr(remote_files, "list_dir", down)
+    monkeypatch.setattr(remote_files, "read_text", down)
+    client = await aiohttp_client(server.create_app())
+    res = await client.get("/api/files?project=rproj", headers=GOOD)
+    assert res.status == 502 and "srvpc" in (await res.json())["reason"]
+    assert (await client.get("/api/file?project=rproj&path=a.txt", headers=GOOD)).status == 502
+
+
+async def test_로컬_프로젝트의_파일_API_는_원격모듈을_타지_않는다(aiohttp_client, tmp_path, monkeypatch):
+    """회귀 — 맥 프로젝트는 지금 경로 그대로(remote_of 가 None)."""
+    from bridge import remote_files
+    (tmp_path / "proj").mkdir(); (tmp_path / "proj" / "a.txt").write_text("hi")
+    monkeypatch.setattr(config, "projects_root", lambda: tmp_path)
+    monkeypatch.setattr(remote_files.sessions, "session_remotes", lambda: {})
+    def boom(*a, **k):
+        raise AssertionError("원격 모듈이 불렸다")
+    monkeypatch.setattr(remote_files, "list_dir", boom)
+    client = await aiohttp_client(server.create_app())
+    res = await client.get("/api/files?project=proj", headers=GOOD)
+    assert res.status == 200 and [e["name"] for e in (await res.json())["entries"]] == ["a.txt"]

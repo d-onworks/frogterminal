@@ -152,3 +152,26 @@ def test_명단은_원자적으로_쓴다(작업공간):
     saved = json.loads(restore.snapshot_file().read_text())
     assert saved["sessions"] == ["hotel"] and saved["at"]
     assert not list(restore.snapshot_file().parent.glob("*.tmp"))     # 임시파일이 남지 않는다
+
+
+# ── 복원 명단의 에이전트 ─────────────────────────────────────────
+
+def test_코덱스로_돌던_세션은_코덱스로_되살린다(작업공간, monkeypatch):
+    """명단에 에이전트를 같이 적는다 — 없으면 코덱스 칸이 클로드로 뜬다."""
+    살아있는세션(monkeypatch, ["hotel", "delta"])
+    monkeypatch.setattr(sessions, "session_agents", lambda: {"delta": "codex"})
+    monkeypatch.setattr(sessions, "kill_session", lambda name: True)
+    restore.kill_all()
+    assert restore.load_snapshot()["agents"] == {"delta": "codex"}
+    살아있는세션(monkeypatch, [])
+    만든것 = []
+    monkeypatch.setattr(restore, "_create_detached", lambda cmd: 만든것.append(cmd))
+    restore.restore_all()
+    by_name = {c[5]: " ".join(c) for c in 만든것}
+    assert "codex" in by_name["delta"] and "codex" not in by_name["hotel"]
+
+
+def test_명단의_에이전트는_아는_것만(작업공간):
+    snap = restore.parse_snapshot({"sessions": ["hotel", "../x"],
+                                   "agents": {"hotel": "rm -rf", "delta": "codex"}})
+    assert snap["sessions"] == ["hotel"] and snap["agents"] == {}

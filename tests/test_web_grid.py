@@ -376,3 +376,31 @@ def test_1칸에서는_더블클릭이_예전처럼_tmux_로_간다(grid, bridge
     grid.wait_for_timeout(300)
     assert "max" not in (grid.get_attribute("#panes", "class") or "")
     assert len(PRESS.findall(bytes(bridge.by_session.get("wiki", b"")))) == 2   # 두 번 다 tmux 로(단어 선택)
+
+
+def pad(page, slot, project=""):
+    """패드 상주 프로그램가 브릿지에 보내는 것과 같은 POST — 같은 출처라 페이지 안에서 쏜다."""
+    page.evaluate("([slot, project]) => fetch('/api/pad', {method: 'POST', "
+                  "headers: {'Content-Type': 'application/json'}, body: JSON.stringify({slot, project})})",
+                  [slot, project])
+
+
+def test_패드_버튼은_여러_칸이면_그_번호_칸으로_간다(grid, bridge):
+    click_pane(grid, 0)
+    pad(grid, 3, "beta")                         # 칸이 넷이면 프로젝트 이름과 상관없이 3번 칸
+    wait_until(grid, "activePane === panes[2]")
+    assert grid.text_content("#hdr-name") == "blog"
+    assert "3번 칸" in grid.text_content("#copy-toast")
+    grid.keyboard.type("pad")                        # 키보드도 그 칸으로 간다
+    grid.wait_for_timeout(300)
+    assert typed(bridge, "blog") == b"pad"
+
+
+def test_패드_버튼은_한_칸이면_그_프로젝트를_연다(grid, bridge):
+    grid.click('#grid-bar button[data-n="1"]')
+    wait_until(grid, all_connected(1))
+    pad(grid, 2, "mall")
+    wait_until(grid, "panes[0].session?.name === 'mall'")
+    assert grid.text_content("#hdr-name") == "mall"
+    pad(grid, 4, "apex")                             # 꺼진 프로젝트는 사이드바처럼 켤지 묻는다
+    grid.wait_for_selector('#sessions li[data-name="apex"] .row-confirm')
